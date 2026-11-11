@@ -150,8 +150,12 @@ static int StartCapture(void)
     cfg.sampleRate = 48000;
     cfg.dataCallback = CaptureCallback;
     cfg.performanceProfile = ma_performance_profile_low_latency;
-    if (ma_device_init(NULL, &cfg, &capDev) != MA_SUCCESS) return 0;
-    if (ma_device_start(&capDev) != MA_SUCCESS) { ma_device_uninit(&capDev); return 0; }
+    if (ma_device_init(NULL, &cfg, &capDev) != MA_SUCCESS) {
+        TraceLog(LOG_WARNING, "MIC: no capture device (audio backend libs not found? on NixOS run inside `nix develop .#desktop`)");
+        return 0;
+    }
+    if (ma_device_start(&capDev) != MA_SUCCESS) { TraceLog(LOG_WARNING, "MIC: capture device failed to start"); ma_device_uninit(&capDev); return 0; }
+    TraceLog(LOG_INFO, "MIC: %s, %u Hz, backend %s", capDev.capture.name, capDev.sampleRate, ma_get_backend_name(capDev.pContext->backend));
     sampleRate = (float)capDev.sampleRate;
     return 1;
 }

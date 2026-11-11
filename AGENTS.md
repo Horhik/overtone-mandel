@@ -104,6 +104,7 @@ python3 tools/synth_overtone.py && gcc -O2 tools/voice_cli.c app/src/main/cpp/vo
 - NixOS: aapt2 из Maven не запустится, flake передаёт через `GRADLE_OPTS` `android.aapt2FromMavenOverride` на aapt2 из SDK. Путь в `/nix/store` машинный, поэтому не в `gradle.properties`.
 - Raymob в `preBuild` переписывает имя пакета в Java и в `deps/raymob/*.c`, а после сборки возвращает обратно. Не коммитить эти файлы в промежуточном состоянии.
 - Разрешение на микрофон спрашивается из C через JNI (`MicPermission`), захват стартует, когда разрешение выдано (опрос раз в секунду).
+- Десктоп на NixOS: miniaudio открывает `libpulse` / `libasound` через dlopen, глобального `/usr/lib` нет. Поэтому `desktop/CMakeLists.txt` вшивает их каталоги в RUNPATH (`find_library`), и бинарник работает вне `nix develop`. Если микрофона нет, в логе будет `MIC: no capture device`. Пути ведут в `/nix/store`: после `nix-collect-garbage` пересобрать.
 - `minSdk 24`: AAudio есть только с API 26, ниже miniaudio сама переключится на OpenSL ES.
 
 ## Статус

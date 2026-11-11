@@ -15,3 +15,17 @@ set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/cpp)
 add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c ${SRC}/beat.c ${SRC}/physarum.c)
 target_include_directories(overtone_mandel PRIVATE ${raylib_SOURCE_DIR}/src)   # external/miniaudio.h
 target_link_libraries(overtone_mandel raylib m)
+
+# miniaudio dlopens the audio backends at runtime; bake their dirs into RUNPATH so the binary
+# finds them outside `nix develop` too (NixOS has no global /usr/lib)
+foreach(lib pulse asound)
+  find_library(AUDIO_${lib} ${lib})
+  if(AUDIO_${lib})
+    get_filename_component(dir ${AUDIO_${lib}} DIRECTORY)
+    list(APPEND AUDIO_RPATH ${dir})
+  endif()
+endforeach()
+if(AUDIO_RPATH)
+  list(REMOVE_DUPLICATES AUDIO_RPATH)
+  set_property(TARGET overtone_mandel APPEND PROPERTY BUILD_RPATH ${AUDIO_RPATH})
+endif()
