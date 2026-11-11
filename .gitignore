@@ -35,3 +35,4 @@ google-services.json
 voice_test.raw
 /voice_test.wav
 desktop/build/
+/media/
