@@ -117,6 +117,12 @@ VoiceInfo VoiceAnalyze(const float *x, float sr)
         v.spec[b] = 20*log10f(m + 1e-9f);
     }
     v.hasSpec = 1;
+    {   // strongest peak, parabolic interpolation
+        int k0 = (int)(50/binHz), k1 = (int)(4000/binHz), bk = k0;
+        for (int k = k0; k <= k1; k++) if (mag_[k] > mag_[bk]) bk = k;
+        float a = mag_[bk-1], b = mag_[bk], c = mag_[bk+1], den = a - 2*b + c;
+        v.peakFreq = (bk + (den != 0 ? 0.5f*(a - c)/den : 0))*binHz;
+    }
 
     // A dominant sung overtone makes YIN lock onto its period. Take all YIN
     // minima and keep the lowest frequency whose harmonic comb fits the spectrum

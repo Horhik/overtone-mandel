@@ -65,16 +65,40 @@ static const struct { double x, y; const char *name; } DIVES[] = {
     {  0.0,                   1.0,                  "dendrite (c = i)" },   // M(1,2)
 };
 #define N_DIVES ((int)(sizeof DIVES/sizeof DIVES[0]))
+
+// Scenes. M steps through all of them, A = auto show: every SCENE_SEC a cross-fade (FADE_SEC) to the next
+// one in SHOW. SHOW never puts two Mandelbrot scenes next to each other (they share one reference orbit).
+enum { MODE_DRIFT, MODE_DIVE, MODE_ORG, MODE_NEWTON, MODE_APOLLO };
+static const struct { int mode, preset; const char *name; } SCENES[] = {
+    { MODE_DRIFT,  0, "drift"              },
+    { MODE_DIVE,   0, "dive + colour"      },
+    { MODE_ORG,    0, "organism: mandala"  },
+    { MODE_ORG,    1, "organism: cells"    },
+    { MODE_ORG,    2, "organism: vessels"  },
+    { MODE_NEWTON, 0, "newton"             },
+    { MODE_APOLLO, 0, "apollonian"         },
+};
+#define N_SCENES ((int)(sizeof SCENES/sizeof SCENES[0]))
+static const int SHOW[] = { 1, 2, 5, 3, 6, 4 };
+#define N_SHOW ((int)(sizeof SHOW/sizeof SHOW[0]))
+static const struct { float c[3], zoom; } ORG_PRESETS[] = {
+    { { -0.45f, -0.55f, -0.85f }, 1.0f },   // mandalas, rings, cells
+    { { -0.60f, -0.80f, -0.50f }, 1.0f },   // colonies of round cells
+    { { -0.90f, -0.90f, -0.90f }, 1.2f },   // rings and vessels
+};
+#define SCENE_SEC    75.0f    // с на сцену в авто-шоу
+#define FADE_SEC      6.0f    // с на перетекание
 // Режим «organism» (срез 3D Kaliset)
-#define ORG_C0      -0.45f, -0.55f, -0.85f   // базовый параметр C (подобран перебором: клетки, кольца, мандалы)
 #define ORG_SLICE0   0.35f    // стартовая координата среза
-#define ORG_ZOOM     1.0f     // ширина видимого куска среза
 #define SLICE_MAX    0.12f    // единиц третьего измерения в секунду при полной скорости
 #define MUT_SPEED    0.06f    // скорость мутации C от обертона
 #define BEAT_AMT     0.6f     // сила пульсации в долю по умолчанию (0..1.5)
 #define PHYS_W       480      // сетка Physarum (растягивается на экран)
 #define PHYS_H       270
 #define PHYS_AGENTS  60000    // ~2 мс/шаг на одном ядре
+#define CHAOS_NOTE_LO 36      // C2 (65 Гц): самая частая нота ниже — плесень спокойная и тяжёлая
+#define CHAOS_NOTE_HI 96      // C7 (2093 Гц): выше — максимум хаоса
+#define CHAOS_AMT     1.0f    // общая сила хаоса
 #define MUT_R        0.22f    // амплитуда мутации C вокруг базового (качается по синусу, не застревает)
 #define SLICE_C      0.15f    // срез качается вокруг этой глубины...
 #define SLICE_A      1.0f     // ...с этой амплитудой: дальше ~±1.5 узор пустеет (проверено рендером)
@@ -267,6 +291,81 @@ static const char *FS_ORG =
 "    gl_FragColor = vec4(col * vig, 1.0);\n"
 "}\n";
 
+// Shared uniforms of the "living" scenes (organism / newton / apollonian): same controls for all of them.
+#define LIVE_UNIFORMS \
+"uniform vec2  uRes;\n" "uniform float uTime;\n" "uniform vec2 uRot;\n" "uniform float uSlice;\n" \
+"uniform vec3  uC;\n" "uniform float uZoom;\n" "uniform float uHue;\n" "uniform float uPulse;\n" "uniform float uGlow;\n" \
+"mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }\n" \
+"vec2 cmul(vec2 a, vec2 b) { return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }\n" \
+"vec2 cdiv(vec2 a, vec2 b) { return vec2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y) / max(dot(b, b), 1e-12); }\n" \
+"vec2 cs(float a) { return vec2(cos(a), sin(a)); }\n"
+
+// "newton": basins of relaxed Newton's method for a cubic whose roots orbit and breathe.
+// uSlice = relaxation (past 1 the boundaries turn chaotic), uC.xy (overtone mutation) drags one root.
+static const char *FS_NEWTON = LIVE_UNIFORMS
+"void main() {\n"
+"    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;\n"
+"    vec2 z = rot(uRot.x * 0.5) * uv * uZoom * 1.5;\n"
+"    z += 0.03 * (1.0 + uPulse) * vec2(sin(z.y * 2.3 + uTime * 0.3), sin(z.x * 2.1 - uTime * 0.27));\n"
+"    float t = uTime * 0.04;\n"
+"    vec2 r0 = cs(t) * (1.0 + 0.15 * sin(uTime * 0.13));\n"
+"    vec2 r1 = cs(t + 2.0944) * (1.0 + 0.15 * sin(uTime * 0.11 + 1.0)) + uC.xy * 2.5;\n"
+"    vec2 r2 = cs(t + 4.1888) * (1.0 + 0.15 * sin(uTime * 0.09 + 2.0));\n"
+"    float a = clamp(1.0 + 0.55 * uSlice, 0.55, 1.75);\n"
+"    float it = 40.0; int root = -1;\n"
+"    for (int i = 0; i < 40; i++) {\n"
+"        vec2 d0 = z - r0, d1 = z - r1, d2 = z - r2;\n"
+"        vec2 p = cmul(cmul(d0, d1), d2);\n"
+"        vec2 dp = cmul(d1, d2) + cmul(d0, d2) + cmul(d0, d1);\n"
+"        z -= a * cdiv(p, dp);\n"
+"        if (dot(z - r0, z - r0) < 1e-4) { root = 0; it = float(i); break; }\n"
+"        if (dot(z - r1, z - r1) < 1e-4) { root = 1; it = float(i); break; }\n"
+"        if (dot(z - r2, z - r2) < 1e-4) { root = 2; it = float(i); break; }\n"
+"    }\n"
+"    float ph = uHue * 6.2831853;\n"
+"    vec3 c0 = vec3(0.10, 0.22, 0.09), c1 = vec3(0.03, 0.14, 0.13), c2 = vec3(0.17, 0.17, 0.10);\n"
+"    vec3 basin = root == 0 ? c0 : root == 1 ? c1 : root == 2 ? c2 : vec3(0.0);\n"
+"    basin = mix(basin, basin.gbr, 0.5 + 0.5 * sin(ph));\n"
+"    float bands = 0.5 + 0.5 * cos(it * 0.9 + uTime * 0.2);\n"     // petals: rings of equal convergence time
+"    float near = exp(-it * 0.12);\n"
+"    vec3 col = basin * (0.4 + 2.2 * near * (0.55 + 0.45 * bands)) * (0.7 + 0.5 * uPulse);\n"
+"    float edge = smoothstep(4.0, 14.0, it);\n"                    // slow convergence = basin boundary: glow
+"    vec3 lichen = vec3(0.26, 0.60, 0.26), ember = vec3(0.80, 0.40, 0.08);\n"
+"    col += mix(lichen, ember, uGlow) * edge * (0.25 + 0.9 * uPulse);\n"
+"    float vig = 1.0 - 0.6 * dot(uv, uv);\n"
+"    gl_FragColor = vec4(col * vig, 1.0);\n"
+"}\n";
+
+// "apollonian": circle-inversion fold (2D Apollonian gasket family): nested rings, sacred geometry.
+// uSlice changes the inversion scale (the whole packing re-forms), uC.xy (mutation) shifts the fold.
+static const char *FS_APOLLO = LIVE_UNIFORMS
+"void main() {\n"
+"    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;\n"
+"    float zoom = uZoom * 1.3;\n"
+"    vec2 z = rot(uRot.x * 0.3) * uv * zoom + vec2(0.25 * sin(uTime * 0.031), 0.25 * cos(uTime * 0.023));\n"
+"    z += 0.02 * (1.0 + uPulse) * vec2(sin(z.y * 3.0 + uTime * 0.4), sin(z.x * 2.6 - uTime * 0.33));\n"
+"    float s = 1.18 + 0.14 * sin(uSlice * 1.7) + 0.25 * uC.x;\n"
+"    vec2 sh = uC.yz * 0.3;\n"
+"    float sc = 1.0; vec4 orb = vec4(1e3);\n"
+"    for (int i = 0; i < 10; i++) {\n"
+"        z = -1.0 + 2.0 * fract(0.5 * z + 0.5 + sh);\n"
+"        float r2 = dot(z, z);\n"
+"        orb = min(orb, vec4(abs(z), r2, abs(r2 - 0.5)));\n"
+"        float k = s / r2;\n"
+"        z *= k; sc *= k;\n"
+"    }\n"
+"    float d = 0.25 * abs(z.y) / sc;\n"
+"    float px = zoom / uRes.y;\n"
+"    float line = exp(-d / px * (3.0 - 1.5 * uPulse));\n"
+"    float t = sqrt(orb.z) * 0.9 + uHue;\n"
+"    vec3 base = vec3(0.05, 0.11, 0.07) + vec3(0.045, 0.09, 0.06) * cos(6.2831853 * (t + vec3(0.0, 0.1, 0.27)));\n"
+"    vec3 col = base * (0.5 + 0.8 * exp(-orb.w * 4.0)) * (0.7 + 0.5 * uPulse);\n"
+"    vec3 bone = vec3(0.62, 0.64, 0.50), lichen = vec3(0.26, 0.60, 0.26), ember = vec3(0.80, 0.40, 0.08);\n"
+"    col += mix(mix(lichen, bone, 0.4), ember, uGlow) * line * (0.25 + 0.7 * uPulse);\n"
+"    float vig = 1.0 - 0.6 * dot(uv, uv);\n"
+"    gl_FragColor = vec4(col * vig, 1.0);\n"
+"}\n";
+
 static Shader LoadShaderBody(const char *body);
 static Shader LoadMandelShader(void) { return LoadShaderBody(FS_BODY); }
 static Shader LoadShaderBody(const char *body)
@@ -363,9 +462,16 @@ int main(void)
     int locIter = GetShaderLocation(sh, "uMaxIter"), locLen = GetShaderLocation(sh, "uRefLen");
     int locHue = GetShaderLocation(sh, "uHue"), locRef = GetShaderLocation(sh, "uRef");
     int locPulse = GetShaderLocation(sh, "uPulse"), locGlow = GetShaderLocation(sh, "uGlow");
-    Shader org = LoadShaderBody(FS_ORG);
-    int oRes = GetShaderLocation(org, "uRes"), oTime = GetShaderLocation(org, "uTime"), oSlice = GetShaderLocation(org, "uSlice");
-    int oRot = GetShaderLocation(org, "uRot");
+    struct { Shader s; int res, time, rot, slice, c, zoom, hue, pulse, glow; } live[3];
+    const char *liveSrc[3] = { FS_ORG, FS_NEWTON, FS_APOLLO };
+    for (int i = 0; i < 3; i++) {
+        Shader q = live[i].s = LoadShaderBody(liveSrc[i]);
+        live[i].res = GetShaderLocation(q, "uRes");     live[i].time = GetShaderLocation(q, "uTime");
+        live[i].rot = GetShaderLocation(q, "uRot");     live[i].slice = GetShaderLocation(q, "uSlice");
+        live[i].c = GetShaderLocation(q, "uC");         live[i].zoom = GetShaderLocation(q, "uZoom");
+        live[i].hue = GetShaderLocation(q, "uHue");     live[i].pulse = GetShaderLocation(q, "uPulse");
+        live[i].glow = GetShaderLocation(q, "uGlow");
+    }
     float flowT = 0, rotA = 0, rotB = 0, rotV = 0, kick = 0, envFast = 0, envSlow = 0, interiorT = 0;
     // beat: tempo tracker fed from the same audio ring; beatAmt = strength of the beat pulse (slider, [ ])
     float beatSr = 0, beatAmt = BEAT_AMT, beatPrevPhase = 0, pulseFx = 0;
@@ -375,26 +481,30 @@ int main(void)
     // physarum overlay (CPU), toggled with P / button
     int physOn = getenv("PHYSARUM") != NULL, physReady = 0;
     Texture2D physTex = { 0 };
-    int oC = GetShaderLocation(org, "uC"), oZoom = GetShaderLocation(org, "uZoom"), oHue = GetShaderLocation(org, "uHue");
-    int oPulse = GetShaderLocation(org, "uPulse"), oGlow = GetShaderLocation(org, "uGlow");
+    // chaos for physarum: the note heard most often (strongest spectral peak, weighted by level) over ~1 s
+    struct { int note; float w; double t; } noteHist[96] = { 0 };
+    int noteW = 0, domNote = 0; float chaosU = 0;
 
     Image refImg = { refBuf, REF_W, REF_H, 1, PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 };
     Texture2D refTex = LoadTextureFromImage(refImg);
     SetTextureFilter(refTex, TEXTURE_FILTER_POINT);
 
-    RenderTexture2D rt = { 0 };
+    RenderTexture2D rt = { 0 }, rtPrev = { 0 };
     int rtW = 0, rtH = 0;
 
     double cx = START_X, cy = START_Y, scale = START_SCALE;
-    int colorMode = getenv("COLOR_MODE") != NULL;   // 0: overtone moves the view, 1: dive into DIVES[], overtone shifts colour
+    int scene = getenv("SCENE") ? atoi(getenv("SCENE")) % N_SCENES
+              : getenv("ORGANISM") ? 2 : getenv("COLOR_MODE") ? 1 : 0;
+    int prevScene = -1, autoOn = getenv("AUTO") != NULL, hideUi = getenv("HIDE_UI") != NULL;
+    float fadeT = FADE_SEC, sceneT = 0, sceneSec = getenv("SCENE_SEC") ? (float)atof(getenv("SCENE_SEC")) : SCENE_SEC;
+    int colorMode = SCENES[scene].mode == MODE_DIVE;   // dive into DIVES[], overtone shifts colour
+    int organism = SCENES[scene].mode >= MODE_ORG;    // a "living" scene: slice/mutation controls instead of zoom/pan
     int dive = getenv("DIVE") ? atoi(getenv("DIVE")) % N_DIVES : 0;
     int ascending = 0; float limitT = 0, pulse = 0;
-    int organism = getenv("ORGANISM") != NULL;      // third mode: living Kaliset slice
-    if (organism) colorMode = 0;
     float slice = getenv("ORG_SLICE") ? (float)atof(getenv("ORG_SLICE")) : ORG_SLICE0, sliceV = 0, mutX = 0, mutY = 0;
-    float orgC0[3] = { ORG_C0 };
-    float orgZoom = getenv("ORG_ZOOM") ? (float)atof(getenv("ORG_ZOOM")) : ORG_ZOOM;
-    if (getenv("ORG_C")) sscanf(getenv("ORG_C"), "%f,%f,%f", &orgC0[0], &orgC0[1], &orgC0[2]);   // tuning hook
+    float orgCx[3] = { 0 }; int orgCOverride = 0;
+    float orgZoomEnv = getenv("ORG_ZOOM") ? (float)atof(getenv("ORG_ZOOM")) : 0;
+    if (getenv("ORG_C")) orgCOverride = sscanf(getenv("ORG_C"), "%f,%f,%f", &orgCx[0], &orgCx[1], &orgCx[2]) == 3;   // tuning hook
     if (colorMode) { cx = DIVES[dive].x; cy = DIVES[dive].y; }
     if (getenv("TEST_SCALE")) scale = atof(getenv("TEST_SCALE"));   // debug hook
     float hist[5] = { 0 }, f0s = 0, otS = 0, promS = 0, level = 0;
@@ -445,6 +555,12 @@ int main(void)
                 for (int i = 0; i < VOICE_N; i++) window[i] = ring[(w - VOICE_N + i) & (RING - 1)];
                 VoiceInfo v = VoiceAnalyze(window, sampleRate);
                 level = v.rms;
+                if (v.rms > 0.003f && v.peakFreq > 0) {
+                    noteHist[noteW % 96].note = (int)lroundf(12*log2f(v.peakFreq/440.0f) + 69);
+                    noteHist[noteW % 96].w = v.rms;
+                    noteHist[noteW % 96].t = GetTime();
+                    noteW++;
+                }
                 voiced = v.voiced && v.rms > 0.003f;
                 if (voiced) {
                     float f = Median5(hist, v.f0);
@@ -485,21 +601,39 @@ int main(void)
         Rectangle physBtn = { fsz*0.5f, fsz*10.1f, fsz*16.0f, fsz*1.8f };
         Rectangle beatRow = { fsz*0.5f, fsz*12.3f, fsz*16.0f, fsz*1.8f };
         Rectangle beatTrack = { beatRow.x + fsz*9.8f, beatRow.y + fsz*0.65f, fsz*5.6f, fsz*0.5f };
+        Rectangle autoBtn = { fsz*0.5f, fsz*14.5f, fsz*16.0f, fsz*1.8f };
         Vector2 mp = GetMousePosition();
         int onUi = CheckCollisionPointRec(mp, hit) || CheckCollisionPointRec(mp, modeBtn) ||
-                   CheckCollisionPointRec(mp, physBtn) || CheckCollisionPointRec(mp, beatRow);
+                   CheckCollisionPointRec(mp, physBtn) || CheckCollisionPointRec(mp, beatRow) || CheckCollisionPointRec(mp, autoBtn);
         if (IsKeyPressed(KEY_P) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, physBtn))) physOn = !physOn;
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, beatRow)) beatDrag = 1;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) beatDrag = 0;
         if (beatDrag) beatAmt = 1.5f*Clamp01((mp.x - beatTrack.x)/beatTrack.width);
         if (IsKeyPressed(KEY_RIGHT_BRACKET)) beatAmt = fminf(1.5f, beatAmt + 0.1f);
         if (IsKeyPressed(KEY_LEFT_BRACKET))  beatAmt = fmaxf(0.0f, beatAmt - 0.1f);
-        if (IsKeyPressed(KEY_M) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), modeBtn))) {
-            // drift -> dive + colour -> organism -> drift
-            if (organism) { organism = 0; colorMode = 0; }
-            else if (colorMode) { colorMode = 0; organism = 1; }
-            else colorMode = 1;
-            if (colorMode) { cx = DIVES[dive].x; cy = DIVES[dive].y; scale = START_SCALE; vx = vy = 0; ascending = 0; }
+        {   // scenes: M = next one, A = auto show, H = hide the interface (for an audience / streaming)
+            int next = -1;
+            if (IsKeyPressed(KEY_M) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, modeBtn)))
+                next = (scene + 1) % N_SCENES;
+            if (IsKeyPressed(KEY_A) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, autoBtn))) {
+                autoOn = !autoOn; sceneT = 0;
+            }
+            if (IsKeyPressed(KEY_H)) hideUi = !hideUi;
+            sceneT += dt; fadeT += dt;
+            if (autoOn && sceneT >= sceneSec && fadeT >= FADE_SEC) {
+                int k = 0;
+                for (int i = 0; i < N_SHOW; i++) if (SHOW[i] == scene) k = i;
+                next = SHOW[(k + 1) % N_SHOW];
+            }
+            if (next >= 0) {
+                int bothMandel = SCENES[next].mode <= MODE_DIVE && SCENES[scene].mode <= MODE_DIVE;
+                prevScene = bothMandel ? -1 : scene;          // two Mandelbrot views can't be drawn at once
+                fadeT = bothMandel ? FADE_SEC : 0;
+                scene = next; sceneT = 0;
+                if (SCENES[next].mode == MODE_DIVE) { cx = DIVES[dive].x; cy = DIVES[dive].y; scale = START_SCALE; vx = vy = 0; ascending = 0; }
+            }
+            colorMode = SCENES[scene].mode == MODE_DIVE;
+            organism = SCENES[scene].mode >= MODE_ORG;
         }
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), hit)) sliderDrag = 1;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) sliderDrag = 0;
@@ -594,19 +728,24 @@ int main(void)
         int w = (int)(sw*RENDER_SCALE), h = (int)(shh*RENDER_SCALE);
         if (w != rtW || h != rtH) {
             if (rtW) UnloadRenderTexture(rt);
+            if (rtW) UnloadRenderTexture(rtPrev);
             rt = LoadRenderTexture(w, h); rtW = w; rtH = h;
+            rtPrev = LoadRenderTexture(w, h);
             SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
+            SetTextureFilter(rtPrev.texture, TEXTURE_FILTER_BILINEAR);
         }
 
         float depth = (float)log2(START_SCALE/scale);
         int maxIter = 250 + (int)(depth*60);
         if (maxIter > ITER_CAP) maxIter = ITER_CAP;
-        int refLen = organism ? 0 : ComputeRef(cx, cy, maxIter);
-        if (!organism) UpdateTexture(refTex, refBuf);
+        int fading = prevScene >= 0 && fadeT < FADE_SEC;
+        int needMandel = !organism || (fading && SCENES[prevScene].mode <= MODE_DIVE);
+        int refLen = needMandel ? ComputeRef(cx, cy, maxIter) : 0;
+        if (needMandel) UpdateTexture(refTex, refBuf);
 
         float res[2] = { (float)w, (float)h }, fs = (float)scale, fi = (float)maxIter, fl = (float)refLen;
         // colour mode: the (smoothed) overtone direction is a position on the palette circle
-        float hue = (float)(depth*0.02 + GetTime()*0.01) + (colorMode ? otAngle/6.2831853f : 0);
+        float hue0 = (float)(depth*0.02 + GetTime()*0.01);
         {   // loudness -> breathing (softer attack: less flicker on music), onsets -> kick
             float lt = Clamp01(level*8);
             pulse += (lt - pulse)*(1 - expf(-dt*(lt > pulse ? 6.0f : 1.8f)));
@@ -637,47 +776,58 @@ int main(void)
         // drift mode: centre fell into the black interior (only pulsing left) -> rise out of it
         interiorT = !organism && !colorMode && !ascending && refLen >= maxIter && scale < 1e-2 ? interiorT + dt : 0;
         if (interiorT > 2.0f) { ascending = 1; interiorT = 0; }
-        BeginTextureMode(rt);
-        if (organism) {
-            // motion: flow time and 3D rotation speed up with loudness, onsets give a jolt
-            flowT += dt*(1 + 2.5f*pulse);
-            rotV += (0.03f + 0.20f*pulse - rotV)*(1 - expf(-dt*1.5f));
-            rotA = fmodf(rotA + (rotV + 0.9f*kick)*dt, 62.831853f);
-            rotB = fmodf(rotB + (0.6f*rotV + 0.5f*kick*dirY)*dt, 62.831853f);
-            float tm = fmodf(flowT, 10000.0f);
-            float C[3] = { orgC0[0] + MUT_R*sinf(mutX/MUT_R) + 0.02f*sinf(tm*0.11f),
-                           orgC0[1] + MUT_R*sinf(mutY/MUT_R) + 0.02f*sinf(tm*0.07f + 1.0f),
-                           orgC0[2] + 0.015f*sinf(tm*0.05f + 2.0f) };
-            float zoom = orgZoom*(1 + 0.05f*sinf(tm*0.09f))*(1 - 0.10f*kick)*(1 - 0.08f*beatAmt*beatEnv);
-            float ohue = (float)(tm*0.004) + otAngle/6.2831853f*0.35f;
-            float effSlice = SLICE_C + SLICE_A*sinf(slice/SLICE_A);
-            float rot2[2] = { rotA, rotB };
-            BeginShaderMode(org);
-                SetShaderValue(org, oRes, res, SHADER_UNIFORM_VEC2);
-                SetShaderValue(org, oTime, &tm, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(org, oSlice, &effSlice, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(org, oRot, rot2, SHADER_UNIFORM_VEC2);
-                SetShaderValue(org, oC, C, SHADER_UNIFORM_VEC3);
-                SetShaderValue(org, oZoom, &zoom, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(org, oHue, &ohue, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(org, oPulse, &pulseFx, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(org, oGlow, &promS, SHADER_UNIFORM_FLOAT);
-                DrawRectangle(0, 0, w, h, WHITE);
-            EndShaderMode();
-        } else {
-            BeginShaderMode(sh);
-                SetShaderValue(sh, locRes, res, SHADER_UNIFORM_VEC2);
-                SetShaderValue(sh, locScale, &fs, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(sh, locIter, &fi, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(sh, locLen, &fl, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(sh, locHue, &hue, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(sh, locPulse, &pulseFx, SHADER_UNIFORM_FLOAT);
-                SetShaderValue(sh, locGlow, &promS, SHADER_UNIFORM_FLOAT);
-                SetShaderValueTexture(sh, locRef, refTex);
-                DrawRectangle(0, 0, w, h, WHITE);
-            EndShaderMode();
+        // motion of the living scenes: flow time and 3D rotation speed up with loudness, onsets give a jolt
+        flowT += dt*(1 + 2.5f*pulse);
+        rotV += (0.03f + 0.20f*pulse - rotV)*(1 - expf(-dt*1.5f));
+        rotA = fmodf(rotA + (rotV + 0.9f*kick)*dt, 62.831853f);
+        rotB = fmodf(rotB + (0.6f*rotV + 0.5f*kick*dirY)*dt, 62.831853f);
+        float tm = fmodf(flowT, 10000.0f);
+        float effSlice = SLICE_C + SLICE_A*sinf(slice/SLICE_A);
+        float rot2[2] = { rotA, rotB };
+        float liveHue = (float)(tm*0.004) + otAngle/6.2831853f*0.35f;
+
+        // draw the current scene into rt and, during a cross-fade, the previous one into rtPrev
+        for (int L = 0; L < 1 + fading; L++) {
+            int sc = L ? prevScene : scene, lm = SCENES[sc].mode;
+            BeginTextureMode(L ? rtPrev : rt);
+            if (lm >= MODE_ORG) {
+                const float *c0 = lm == MODE_ORG ? (orgCOverride ? orgCx : ORG_PRESETS[SCENES[sc].preset].c) : (const float[3]){ 0, 0, 0 };
+                float zb = lm == MODE_ORG ? (orgZoomEnv > 0 ? orgZoomEnv : ORG_PRESETS[SCENES[sc].preset].zoom) : 1.0f;
+                float C[3] = { c0[0] + MUT_R*sinf(mutX/MUT_R) + 0.02f*sinf(tm*0.11f),
+                               c0[1] + MUT_R*sinf(mutY/MUT_R) + 0.02f*sinf(tm*0.07f + 1.0f),
+                               c0[2] + 0.015f*sinf(tm*0.05f + 2.0f) };
+                float zoom = zb*(1 + 0.05f*sinf(tm*0.09f))*(1 - 0.10f*kick)*(1 - 0.08f*beatAmt*beatEnv);
+                int li = lm - MODE_ORG;
+                Shader q = live[li].s;
+                BeginShaderMode(q);
+                    SetShaderValue(q, live[li].res, res, SHADER_UNIFORM_VEC2);
+                    SetShaderValue(q, live[li].time, &tm, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(q, live[li].slice, &effSlice, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(q, live[li].rot, rot2, SHADER_UNIFORM_VEC2);
+                    SetShaderValue(q, live[li].c, C, SHADER_UNIFORM_VEC3);
+                    SetShaderValue(q, live[li].zoom, &zoom, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(q, live[li].hue, &liveHue, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(q, live[li].pulse, &pulseFx, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(q, live[li].glow, &promS, SHADER_UNIFORM_FLOAT);
+                    DrawRectangle(0, 0, w, h, WHITE);
+                EndShaderMode();
+            } else {
+                // dive + colour: the (smoothed) overtone direction is a position on the palette circle
+                float hue = hue0 + (lm == MODE_DIVE ? otAngle/6.2831853f : 0);
+                BeginShaderMode(sh);
+                    SetShaderValue(sh, locRes, res, SHADER_UNIFORM_VEC2);
+                    SetShaderValue(sh, locScale, &fs, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(sh, locIter, &fi, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(sh, locLen, &fl, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(sh, locHue, &hue, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(sh, locPulse, &pulseFx, SHADER_UNIFORM_FLOAT);
+                    SetShaderValue(sh, locGlow, &promS, SHADER_UNIFORM_FLOAT);
+                    SetShaderValueTexture(sh, locRef, refTex);
+                    DrawRectangle(0, 0, w, h, WHITE);
+                EndShaderMode();
+            }
+            EndTextureMode();
         }
-        EndTextureMode();
 
         if (physOn) {
             if (!physReady) {
@@ -690,18 +840,42 @@ int main(void)
                 physReady = 1;
             }
             // loudness -> speed and deposit, overtone -> sensor angle (shape of the network), beats -> jolt
+            {   // most frequent note of the last second -> chaos character (low: heavy and calm, high: twitchy)
+                float acc[128] = { 0 }; double now = GetTime(); int best = 0;
+                for (int i = 0; i < 96; i++)
+                    if (noteHist[i].w > 0 && now - noteHist[i].t < 1.0 && noteHist[i].note > 0 && noteHist[i].note < 128)
+                        acc[noteHist[i].note] += noteHist[i].w;
+                for (int n = 1; n < 128; n++) if (acc[n] > acc[best]) best = n;
+                if (acc[best] > 0) domNote = best;
+                float u = domNote ? Clamp01((domNote - CHAOS_NOTE_LO)/(float)(CHAOS_NOTE_HI - CHAOS_NOTE_LO)) : 0;
+                if (acc[best] <= 0) u = 0;                                   // silence: calm down
+                chaosU += (u - chaosU)*(1 - expf(-dt*1.5f));
+            }
             // sensor angle 25..65 deg: narrow -> long veins and vessels, wide -> honeycomb of cells
             float sa = (25.0f + 40.0f*(0.5f + 0.5f*sinf(otAngle)))*0.017453f;
-            PhysParams pp = { sa, 9.0f, 30.0f*0.017453f, 0.6f + 1.6f*pulseFx, 1.0f + 2.0f*pulseFx, 0.90f,
-                              (beatHit ? 0.05f*beatAmt : 0) + 0.01f*kick };
+            float cz = CHAOS_AMT*chaosU;
+            PhysParams pp = { sa, 15.0f - 10.0f*chaosU, 30.0f*0.017453f, 0.6f + 1.6f*pulseFx, 1.0f + 2.0f*pulseFx, 0.90f,
+                              (beatHit ? 0.05f*beatAmt : 0) + 0.01f*kick,
+                              0.05f + 1.6f*powf(cz, 1.3f)*(0.5f + 0.5f*pulseFx),   // wander
+                              0.02f + 0.33f*cz,                                     // wild agents
+                              0.05f + 0.5f*cz,                                      // swirl strength
+                              1.2f + 5.0f*chaosU,                                   // vortex size: low note = big
+                              (float)fmod(GetTime(), 10000.0) };
             PhysStep(pp);
             UpdateTexture(physTex, PhysTrail8());
         }
 
         BeginDrawing();
             ClearBackground(BLACK);
-            DrawTexturePro(rt.texture, (Rectangle){ 0, 0, (float)w, (float)-h },
-                           (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
+            if (fading) {   // previous scene underneath, the new one fades in (smoothstep)
+                float f = Clamp01(fadeT/FADE_SEC); f = f*f*(3 - 2*f);
+                DrawTexturePro(rtPrev.texture, (Rectangle){ 0, 0, (float)w, (float)-h },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
+                DrawTexturePro(rt.texture, (Rectangle){ 0, 0, (float)w, (float)-h },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, Fade(WHITE, f));
+            } else
+                DrawTexturePro(rt.texture, (Rectangle){ 0, 0, (float)w, (float)-h },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
             if (physOn && physReady) {   // slime-mould veins glowing over the fractal
                 Color pc = { (unsigned char)(90 + 145*promS), (unsigned char)(205 - 80*promS), (unsigned char)(95 - 60*promS), 255 };
                 pc.a = (unsigned char)(255*Clamp01(0.30f + 0.5f*pulseFx));
@@ -712,6 +886,7 @@ int main(void)
             }
 
             // HUD
+            if (!hideUi) {
             int x0 = fsz, y0 = fsz;
             DrawRectangle(x0 - fsz/2, y0 - fsz/2, fsz*16, fsz*7, Fade(BLACK, 0.45f));
             if (organism) DrawText(TextFormat("slice %+.2f%s", SLICE_C + SLICE_A*sinf(slice/SLICE_A), kick > 0.5f ? "  *" : ""), x0, y0, fsz, RAYWHITE);
@@ -719,7 +894,7 @@ int main(void)
             if (ascending)
                 DrawText(colorMode ? TextFormat("limit reached - sing to rise, next: %s", DIVES[dive].name)
                                    : "limit reached - sing to rise",
-                         (int)(beatRow.x + fsz*0.5f), (int)(beatRow.y + beatRow.height + fsz*0.5f), fsz, (Color){ 190, 230, 150, 255 });
+                         (int)(autoBtn.x + fsz*0.5f), (int)(autoBtn.y + autoBtn.height + fsz*0.5f), fsz, (Color){ 190, 230, 150, 255 });
             DrawText(voiced ? TextFormat("f0    %.0f Hz", f0s) : "f0    --", x0, y0 + fsz*1.3f, fsz, RAYWHITE);
             DrawText(promS > 0.02f ? TextFormat("over  %.0f Hz", otS) : "over  --", x0, y0 + fsz*2.6f, fsz, RAYWHITE);
             DrawRectangle(x0, y0 + fsz*4.0f, (int)(fsz*8*Clamp01(level*8)), fsz/2, GREEN);
@@ -728,13 +903,32 @@ int main(void)
             DrawRectangleRec(modeBtn, Fade(BLACK, 0.45f));
             Color mc = organism ? (Color){ 150, 220, 120, 255 } : colorMode ? ORANGE : RAYWHITE;
             DrawRectangleLinesEx(modeBtn, 2, Fade(mc, 0.8f));
-            DrawText(organism ? "mode: organism  [M]" : colorMode ? "mode: dive + colour  [M]" : "mode: drift  [M]",
+            DrawText(TextFormat("%s  [M]", SCENES[scene].name),
                      (int)(modeBtn.x + fsz*0.5f), (int)(modeBtn.y + fsz*0.4f), fsz, mc);
+            // auto show: on/off, time to the next scene
+            {
+                Color ac = autoOn ? (Color){ 150, 220, 120, 255 } : Fade(RAYWHITE, 0.6f);
+                DrawRectangleRec(autoBtn, Fade(BLACK, 0.45f));
+                DrawRectangleLinesEx(autoBtn, 2, Fade(ac, 0.8f));
+                DrawText(autoOn ? TextFormat("auto show: %.0fs  [A]  H: hide", fmaxf(0, sceneSec - sceneT)) : "auto show: off  [A]  H: hide",
+                         (int)(autoBtn.x + fsz*0.5f), (int)(autoBtn.y + fsz*0.4f), fsz, ac);
+                if (autoOn)
+                    DrawRectangle((int)autoBtn.x + 2, (int)(autoBtn.y + autoBtn.height - fsz*0.25f),
+                                  (int)((autoBtn.width - 4)*Clamp01(sceneT/sceneSec)), (int)(fsz*0.18f), Fade(ac, 0.8f));
+            }
             // physarum toggle
             Color phc = physOn ? (Color){ 150, 220, 120, 255 } : Fade(RAYWHITE, 0.6f);
             DrawRectangleRec(physBtn, Fade(BLACK, 0.45f));
             DrawRectangleLinesEx(physBtn, 2, Fade(phc, 0.8f));
-            DrawText(physOn ? "physarum: on  [P]" : "physarum: off  [P]", (int)(physBtn.x + fsz*0.5f), (int)(physBtn.y + fsz*0.4f), fsz, phc);
+            {
+                static const char *NN[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+                const char *t = !physOn ? "physarum: off  [P]"
+                              : domNote ? TextFormat("physarum %s%d %.0fHz [P]", NN[domNote % 12], domNote/12 - 1, 440*powf(2, (domNote - 69)/12.0f))
+                              : "physarum: on  [P]";
+                DrawText(t, (int)(physBtn.x + fsz*0.5f), (int)(physBtn.y + fsz*0.4f), fsz, phc);
+                if (physOn)   // chaos meter along the bottom of the button
+                    DrawRectangle((int)physBtn.x + 2, (int)(physBtn.y + physBtn.height - fsz*0.25f), (int)((physBtn.width - 4)*chaosU), (int)(fsz*0.18f), Fade((Color){ 235, 125, 35, 255 }, 0.8f));
+            }
             // beat: tempo, a dot that flashes on every beat, strength slider
             DrawRectangleRec(beatRow, Fade(BLACK, 0.45f));
             DrawRectangleLinesEx(beatRow, 2, Fade(RAYWHITE, 0.5f));
@@ -841,6 +1035,7 @@ int main(void)
                 DrawText("-", (int)(track.x - fsz*1.4f), (int)(track.y - fsz*0.3f), fsz, SKYBLUE);
                 DrawText("+", (int)(track.x + track.width + fsz*0.6f), (int)(track.y - fsz*0.3f), fsz, LIME);
             }
+            }   // !hideUi
         EndDrawing();
 
         if (shotDir && GetTime() - startTime > shotNext) {

@@ -37,13 +37,25 @@ static float Sense(float x, float y)
 void PhysStep(PhysParams p)
 {
     if (!ag) return;
+    int nWild = (int)(p.wildFrac*N);
+    float kx = 6.2831853f*p.swirlScale/H, ky = kx*1.3f, t1 = p.time*0.7f, t2 = p.time*0.53f;
     for (int i = 0; i < N; i++) {
         Agent *g = &ag[i];
         if (p.jolt > 0 && Rand01() < p.jolt) g->a = Rand01()*6.2831853f;
+        // flowing vortex field bends everyone
+        if (p.swirl > 0) g->a += p.swirl*sinf(g->x*kx + t1)*cosf(g->y*ky - t2);
+        if (i < nWild) {   // wild: no sensing, jittery and fast, bright trace
+            g->a += (Rand01() - 0.5f)*(1.2f + 2.0f*p.wander);
+            g->x += cosf(g->a)*p.speed*2.2f; g->y += sinf(g->a)*p.speed*2.2f;
+            if (g->x < 0) g->x += W; else if (g->x >= W) g->x -= W;
+            if (g->y < 0) g->y += H; else if (g->y >= H) g->y -= H;
+            trail[(int)g->y*W + (int)g->x] += p.deposit*3.0f;
+            continue;
+        }
         float f  = Sense(g->x + cosf(g->a)*p.sensorDist, g->y + sinf(g->a)*p.sensorDist);
         float fl = Sense(g->x + cosf(g->a + p.sensorAngle)*p.sensorDist, g->y + sinf(g->a + p.sensorAngle)*p.sensorDist);
         float fr = Sense(g->x + cosf(g->a - p.sensorAngle)*p.sensorDist, g->y + sinf(g->a - p.sensorAngle)*p.sensorDist);
-        g->a += (Rand01() - 0.5f)*0.3f*p.turn;          // a little wander keeps the network from freezing
+        g->a += (Rand01() - 0.5f)*(0.3f*p.turn + p.wander);   // wander: keeps it alive, chaos makes it twitch
         if (f >= fl && f >= fr) {}
         else if (f < fl && f < fr) g->a += (Rand() & 1 ? 1 : -1)*p.turn;
         else if (fl > fr) g->a += p.turn;

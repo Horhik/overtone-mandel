@@ -19,6 +19,7 @@ typedef struct {
     int   otN;                  // its harmonic number (integer peak), 0 if none
     int   nHarm;                // harmonics 1..nHarm below VOICE_SPEC_FMAX are in harmDb
     float harmDb[VOICE_HMAX];   // level of harmonic n at harmDb[n-1], dB
+    float peakFreq;             // strongest spectral peak 50..4000 Hz (any sound, not only voice), Hz
     int   hasSpec;              // spec[] is valid
     float spec[VOICE_SPEC_BINS];// peak level per display bin, dB
 } VoiceInfo;

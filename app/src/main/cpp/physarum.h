@@ -11,6 +11,11 @@ typedef struct {
     float deposit;       // trail added per agent per step
     float decay;         // trail multiplier per step (0..1)
     float jolt;          // 0..1: fraction of agents given a random heading this step
+    float wander;        // radians: random steering of every agent (chaos)
+    float wildFrac;      // 0..1: share of "wild" agents that ignore the trail and race through the swirl
+    float swirl;         // radians per step: strength of the flowing vortex field
+    float swirlScale;    // vortices per screen height
+    float time;          // seconds, moves the vortex field
 } PhysParams;
 
 void PhysInit(int w, int h, int agents, unsigned seed);
