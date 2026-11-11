@@ -6,8 +6,8 @@
 #define F0_MAX     420.0f
 #define YIN_W      2048        // YIN integration window
 #define YIN_THRESH 0.35f
-#define OT_FMIN    450.0f      // band where sung overtones live
-#define OT_FMAX   4000.0f
+#define OT_FMIN    VOICE_OT_FMIN
+#define OT_FMAX    VOICE_OT_FMAX
 
 static float re_[VOICE_N], im_[VOICE_N], mag_[VOICE_N/2];
 
@@ -107,6 +107,17 @@ VoiceInfo VoiceAnalyze(const float *x, float sr)
     for (int k = 0; k < VOICE_N/2; k++) mag_[k] = sqrtf(re_[k]*re_[k] + im_[k]*im_[k]);
     float binHz = sr/VOICE_N;
 
+    // coarse spectrum for display
+    for (int b = 0; b < VOICE_SPEC_BINS; b++) {
+        int k0 = (int)(b*VOICE_SPEC_FMAX/VOICE_SPEC_BINS/binHz);
+        int k1 = (int)((b + 1)*VOICE_SPEC_FMAX/VOICE_SPEC_BINS/binHz);
+        if (k1 >= VOICE_N/2) k1 = VOICE_N/2 - 1;
+        float m = 0;
+        for (int k = k0; k <= k1; k++) if (mag_[k] > m) m = mag_[k];
+        v.spec[b] = 20*log10f(m + 1e-9f);
+    }
+    v.hasSpec = 1;
+
     // A dominant sung overtone makes YIN lock onto its period. Take all YIN
     // minima and keep the lowest frequency whose harmonic comb fits the spectrum
     // about as well as the best one (sub-octaves fit badly, overtones equally well).
@@ -120,6 +131,11 @@ VoiceInfo VoiceAnalyze(const float *x, float sr)
     for (int i = 0; i < nc; i++) if (sc[i] >= best - 3.0f && cand[i] < f0) f0 = cand[i];
     v.f0 = f0;
     v.voiced = 1;
+
+    for (int n = 1; n <= VOICE_HMAX && n*f0 < VOICE_SPEC_FMAX; n++) {
+        v.harmDb[n-1] = 20*log10f(harmEnergy(n*f0, binHz) + 1e-9f);
+        v.nHarm = n;
+    }
 
     float L[64]; int ns[64], cnt = 0;
     for (int n = 2; n < 64; n++) {
@@ -140,6 +156,7 @@ VoiceInfo VoiceAnalyze(const float *x, float sr)
         if (prom > bestProm) { bestProm = prom; bi = i; }
     }
     v.otProm = bestProm;
+    v.otN = ns[bi];
 
     // continuous harmonic number: power-weighted centroid of peak and neighbours
     double sw = 0, sn = 0;

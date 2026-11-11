@@ -11,6 +11,6 @@ FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git
 FetchContent_MakeAvailable(raylib)
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/cpp)
-add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c)
+add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c ${SRC}/beat.c ${SRC}/physarum.c)
 target_include_directories(overtone_mandel PRIVATE ${raylib_SOURCE_DIR}/src)   # external/miniaudio.h
 target_link_libraries(overtone_mandel raylib m)
