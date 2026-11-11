@@ -43,4 +43,5 @@ target_include_directories(${APP_LIB_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/deps/ray
 target_compile_options(${APP_LIB_NAME} PRIVATE -O2)
 
 # Link required libraries to the native application
-target_link_libraries(${APP_LIB_NAME} raylib raymoblib)
+# raylib links only GLESv2; ES 3.0 entry points (VAOs, instancing, glBlitFramebuffer) live in GLESv3
+target_link_libraries(${APP_LIB_NAME} raylib raymoblib GLESv3)
