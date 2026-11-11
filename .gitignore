@@ -32,3 +32,6 @@ google-services.json
 
 # Android Profiling
 *.hprof
+voice_test.raw
+/voice_test.wav
+desktop/build/
