@@ -496,6 +496,7 @@ int main(void)
     int scene = getenv("SCENE") ? atoi(getenv("SCENE")) % N_SCENES
               : getenv("ORGANISM") ? 2 : getenv("COLOR_MODE") ? 1 : 0;
     int prevScene = -1, autoOn = getenv("AUTO") != NULL, hideUi = getenv("HIDE_UI") != NULL;
+    if (hideUi) HideCursor();
     float fadeT = FADE_SEC, sceneT = 0, sceneSec = getenv("SCENE_SEC") ? (float)atof(getenv("SCENE_SEC")) : SCENE_SEC;
     int colorMode = SCENES[scene].mode == MODE_DIVE;   // dive into DIVES[], overtone shifts colour
     int organism = SCENES[scene].mode >= MODE_ORG;    // a "living" scene: slice/mutation controls instead of zoom/pan
@@ -611,14 +612,17 @@ int main(void)
         if (beatDrag) beatAmt = 1.5f*Clamp01((mp.x - beatTrack.x)/beatTrack.width);
         if (IsKeyPressed(KEY_RIGHT_BRACKET)) beatAmt = fminf(1.5f, beatAmt + 0.1f);
         if (IsKeyPressed(KEY_LEFT_BRACKET))  beatAmt = fmaxf(0.0f, beatAmt - 0.1f);
-        {   // scenes: M = next one, A = auto show, H = hide the interface (for an audience / streaming)
+        {   // scenes: M = next one, A = auto show, H / F11 = hide the interface and cursor (for an audience / streaming)
             int next = -1;
             if (IsKeyPressed(KEY_M) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, modeBtn)))
                 next = (scene + 1) % N_SCENES;
             if (IsKeyPressed(KEY_A) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, autoBtn))) {
                 autoOn = !autoOn; sceneT = 0;
             }
-            if (IsKeyPressed(KEY_H)) hideUi = !hideUi;
+            if (IsKeyPressed(KEY_H) || IsKeyPressed(KEY_F11)) {
+                hideUi = !hideUi;
+                if (hideUi) HideCursor(); else ShowCursor();
+            }
             sceneT += dt; fadeT += dt;
             if (autoOn && sceneT >= sceneSec && fadeT >= FADE_SEC) {
                 int k = 0;
