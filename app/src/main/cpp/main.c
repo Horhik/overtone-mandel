@@ -34,6 +34,7 @@
 #include "voice.h"
 #include "beat.h"
 #include "physarum.h"
+#include "show.h"
 
 // ------------------------------------------------------------- tuning
 #define F0_LO        70.0f     // Гц: диапазон ползунка базового тона
@@ -93,6 +94,8 @@ static const struct { float c[3], zoom; } ORG_PRESETS[] = {
 #define SLICE_MAX    0.12f    // единиц третьего измерения в секунду при полной скорости
 #define MUT_SPEED    0.06f    // скорость мутации C от обертона
 #define BEAT_AMT     0.6f     // сила пульсации в долю по умолчанию (0..1.5)
+#define VID_W        640      // видео-слой декодируется в этом размере (растягивается на экран)
+#define VID_H        360
 #define PHYS_W       480      // сетка Physarum (растягивается на экран)
 #define PHYS_H       270
 #define PHYS_AGENTS  60000    // ~2 мс/шаг на одном ядре
@@ -370,6 +373,68 @@ static const char *FS_APOLLO = LIVE_UNIFORMS
 "    gl_FragColor = vec4(col * vig, 1.0);\n"
 "}\n";
 
+// video layer, drawn over the scene (additive or alpha): crossfade of two clips, breathing scale,
+// liquid warp, desaturate + contrast + tint. Alpha = opacity. Everything comes from the show file.
+static const char *FS_FILM =
+"uniform sampler2D texture0;\n"   // current clip
+"uniform sampler2D uPrev;\n"      // previous clip while crossfading
+"uniform float uMix;\n"
+"uniform float uOp;\n"
+"uniform float uTime;\n"
+"uniform float uWarp;\n"
+"uniform float uZoom;\n"
+"uniform float uSat;\n"
+"uniform float uContrast;\n"
+"uniform vec3  uTint;\n"
+"void main() {\n"
+"    vec2 c = (fragTexCoord - 0.5) / uZoom;\n"
+"    c += uWarp * vec2(sin(c.y * 9.0 + uTime * 0.50) + 0.5 * sin(c.x * 17.0 - uTime * 0.70),\n"
+"                      sin(c.x * 8.0 - uTime * 0.43) + 0.5 * sin(c.y * 15.0 + uTime * 0.61));\n"
+"    vec2 uv = c + 0.5;\n"
+"    vec3 col = mix(texture2D(uPrev, uv).rgb, texture2D(texture0, uv).rgb, uMix);\n"
+"    col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, uSat);\n"
+"    col = clamp((col - 0.5) * uContrast + 0.5, 0.0, 1.0) * uTint;\n"
+"    gl_FragColor = vec4(col, uOp);\n"
+"}\n";
+
+// final pass over the whole picture: hue rotation, saturation, contrast, brightness, tint, film grain
+static const char *FS_GRADE =
+"uniform sampler2D texture0;\n"
+"uniform float uHue;\n"          // radians
+"uniform float uSat;\n"
+"uniform float uBright;\n"
+"uniform float uContrast;\n"
+"uniform vec3  uTint;\n"
+"uniform float uGrain;\n"        // amplitude
+"uniform float uGrainSize;\n"    // screen pixels
+"uniform float uGrainSeed;\n"    // seed + frame, kept small for float precision
+"uniform float uGrainColor;\n"   // 0 = grey, 1 = coloured
+"float hash(vec2 p) {\n"         // Dave Hoskins' hash12
+"    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n"
+"    p3 += dot(p3, p3.yzx + 33.33);\n"
+"    return fract((p3.x + p3.y) * p3.z);\n"
+"}\n"
+"void main() {\n"
+"    vec3 c = texture2D(texture0, fragTexCoord).rgb;\n"
+"    vec3 k = vec3(0.57735);\n"
+"    float ch = cos(uHue), sh = sin(uHue);\n"
+"    c = c * ch + cross(k, c) * sh + k * dot(k, c) * (1.0 - ch);\n"   // rotate around the grey axis
+"    c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, uSat);\n"
+"    c = ((c - 0.5) * uContrast + 0.5) * uBright * uTint;\n"
+"    vec2 g = floor(gl_FragCoord.xy / max(uGrainSize, 1.0)) + uGrainSeed * vec2(13.7, 7.3);\n"
+"    vec3 n = mix(vec3(hash(g)), vec3(hash(g + 3.1), hash(g + 7.7), hash(g + 11.3)), uGrainColor) - 0.5;\n"
+"    c += 2.0 * uGrain * n;\n"
+"    gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);\n"
+"}\n";
+
+// palette sliders (G): applied on top of the show file
+static const struct { const char *name; float lo, hi, def; } GRADE_UI[] = {
+    { "hue",        -180, 180, 0 }, { "saturation", 0, 2, 1 }, { "brightness", 0, 2, 1 }, { "contrast", 0.5f, 2, 1 },
+    { "warm - cold", -1, 1, 0 },    { "green - magenta", -1, 1, 0 }, { "video", 0, 2, 1 }, { "grain", 0, 3, 1 },
+};
+#define N_GRADE ((int)(sizeof GRADE_UI/sizeof GRADE_UI[0]))
+enum { G_HUE, G_SAT, G_BRIGHT, G_CONTRAST, G_WARM, G_MAGENTA, G_VIDEO, G_GRAIN };
+
 static Shader LoadShaderBody(const char *body);
 static Shader LoadMandelShader(void) { return LoadShaderBody(FS_BODY); }
 static Shader LoadShaderBody(const char *body)
@@ -441,7 +506,7 @@ static float Median5(float *h, float v)
     return s[2];
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "Overtone Mandelbrot");
@@ -487,6 +552,33 @@ int main(void)
     Texture2D physTex = { 0 };
     // chaos for physarum: the note heard most often (strongest spectral peak, weighted by level) over ~1 s
     struct { int note; float w; double t; } noteHist[96] = { 0 };
+    // video layer + colour grade + grain, driven by the show file. Media folder (show.txt + videos):
+    // first argument, else MEDIA=<dir>, else ./media; SHOW=<file or dir> overrides the show file,
+    // VIDEO=<file> plays just that clip. V toggles the video, , . switch clips, G shows the palette sliders.
+    Shader filmSh = LoadShaderBody(FS_FILM);
+    int locFilmT = GetShaderLocation(filmSh, "uTime"), locFilmOp = GetShaderLocation(filmSh, "uOp");
+    int locFilmPrev = GetShaderLocation(filmSh, "uPrev"), locFilmMix = GetShaderLocation(filmSh, "uMix");
+    int locFilmWarp = GetShaderLocation(filmSh, "uWarp"), locFilmZoom = GetShaderLocation(filmSh, "uZoom");
+    int locFilmSat = GetShaderLocation(filmSh, "uSat"), locFilmCon = GetShaderLocation(filmSh, "uContrast");
+    int locFilmTint = GetShaderLocation(filmSh, "uTint");
+    Shader gradeSh = LoadShaderBody(FS_GRADE);
+    int locGHue = GetShaderLocation(gradeSh, "uHue"), locGSat = GetShaderLocation(gradeSh, "uSat");
+    int locGBright = GetShaderLocation(gradeSh, "uBright"), locGCon = GetShaderLocation(gradeSh, "uContrast");
+    int locGTint = GetShaderLocation(gradeSh, "uTint"), locGGrain = GetShaderLocation(gradeSh, "uGrain");
+    int locGSize = GetShaderLocation(gradeSh, "uGrainSize"), locGSeed = GetShaderLocation(gradeSh, "uGrainSeed");
+    int locGColor = GetShaderLocation(gradeSh, "uGrainColor");
+    Image vidImg = GenImageColor(VID_W, VID_H, BLACK);
+    Texture2D vidTex[2] = { LoadTextureFromImage(vidImg), LoadTextureFromImage(vidImg) };   // current, previous clip
+    UnloadImage(vidImg);
+    for (int i = 0; i < 2; i++) { SetTextureFilter(vidTex[i], TEXTURE_FILTER_BILINEAR); SetTextureWrap(vidTex[i], TEXTURE_WRAP_CLAMP); }
+    const char *mediaDir = argc > 1 ? argv[1] : getenv("MEDIA") ? getenv("MEDIA") : "media";
+    ShowInit(getenv("SHOW") ? getenv("SHOW") : mediaDir, getenv("VIDEO"), VID_W, VID_H);
+    float showP[N_SP] = { 0 }, showV[N_SV] = { 0 }, dbS = -90;
+    float gradeV[N_GRADE];
+    for (int i = 0; i < N_GRADE; i++) gradeV[i] = GRADE_UI[i].def;
+    int gradeUi = 0, gradeDrag = -1;
+    RenderTexture2D rtOut = { 0 };   // the whole picture before the grade pass
+    int outW = 0, outH = 0;
     int noteW = 0, domNote = 0; float chaosU = 0;
 
     Image refImg = { refBuf, REF_W, REF_H, 1, PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 };
@@ -607,10 +699,33 @@ int main(void)
         Rectangle beatRow = { fsz*0.5f, fsz*12.3f, fsz*16.0f, fsz*1.8f };
         Rectangle beatTrack = { beatRow.x + fsz*9.8f, beatRow.y + fsz*0.65f, fsz*5.6f, fsz*0.5f };
         Rectangle autoBtn = { fsz*0.5f, fsz*14.5f, fsz*16.0f, fsz*1.8f };
-        Vector2 mp = GetMousePosition();
-        int onUi = CheckCollisionPointRec(mp, hit) || CheckCollisionPointRec(mp, modeBtn) ||
+        Rectangle gradeBox = { sw*0.5f - fsz*10, fsz*0.5f, fsz*20.0f, fsz*(2.0f + 1.4f*N_GRADE) };
+        // hidden interface: its buttons and sliders must not catch clicks (mouse "parked" far away for hit tests)
+        Vector2 mp = hideUi ? (Vector2){ -1e6f, -1e6f } : GetMousePosition();
+        int onUi = (gradeUi && CheckCollisionPointRec(mp, gradeBox)) || CheckCollisionPointRec(mp, hit) || CheckCollisionPointRec(mp, modeBtn) ||
                    CheckCollisionPointRec(mp, physBtn) || CheckCollisionPointRec(mp, beatRow) || CheckCollisionPointRec(mp, autoBtn);
         if (IsKeyPressed(KEY_P) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, physBtn))) physOn = !physOn;
+        if (IsKeyPressed(KEY_V)) ShowSetVideo(!ShowVideoOn(), GetTime());
+        if (IsKeyPressed(KEY_PERIOD)) ShowSkip(1, GetTime());
+        if (IsKeyPressed(KEY_COMMA))  ShowSkip(-1, GetTime());
+        if (IsKeyPressed(KEY_G)) gradeUi = !gradeUi;
+        {   // palette sliders: drag, right click = reset; values printed on release to copy into the show file
+            int showing = gradeUi && !hideUi;
+            for (int i = 0; showing && i < N_GRADE; i++) {
+                Rectangle row = { gradeBox.x, gradeBox.y + fsz*(1.6f + 1.4f*i), gradeBox.width, fsz*1.4f };
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, row)) gradeDrag = i;
+                if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mp, row)) gradeV[i] = GRADE_UI[i].def;
+            }
+            if (gradeDrag >= 0 && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                TraceLog(LOG_INFO, "GRADE: hue %+.0f  sat x%.2f  bright x%.2f  contrast x%.2f  warm %+.2f  magenta %+.2f  video x%.2f  grain x%.2f",
+                         gradeV[0], gradeV[1], gradeV[2], gradeV[3], gradeV[4], gradeV[5], gradeV[6], gradeV[7]);
+                gradeDrag = -1;
+            }
+            if (gradeDrag >= 0) {
+                float u = Clamp01((mp.x - (gradeBox.x + fsz*8)) / (gradeBox.width - fsz*11));
+                gradeV[gradeDrag] = GRADE_UI[gradeDrag].lo + u*(GRADE_UI[gradeDrag].hi - GRADE_UI[gradeDrag].lo);
+            }
+        }
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, beatRow)) beatDrag = 1;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) beatDrag = 0;
         if (beatDrag) beatAmt = 1.5f*Clamp01((mp.x - beatTrack.x)/beatTrack.width);
@@ -643,7 +758,7 @@ int main(void)
             colorMode = SCENES[scene].mode == MODE_DIVE;
             organism = SCENES[scene].mode >= MODE_ORG;
         }
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), hit)) sliderDrag = 1;
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, hit)) sliderDrag = 1;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) sliderDrag = 0;
         if (sliderDrag) {
             f0Base = SliderF(Clamp01((GetMousePosition().x - track.x)/track.width));
@@ -873,7 +988,28 @@ int main(void)
             UpdateTexture(physTex, PhysTrail8());
         }
 
-        BeginDrawing();
+        // ---- show file: variables -> parameters, video playlist
+        {
+            float db = 20*log10f(level + 1e-5f);
+            dbS += (db - dbS)*(1 - expf(-dt*(db > dbS ? 20.0f : 4.0f)));   // fast attack, slower release
+            double now = GetTime();
+            ShowPoll(now);
+            showV[SV_T] = (float)fmod(now, 10000.0); showV[SV_LEVEL] = Clamp01(level*8); showV[SV_DB] = dbS;
+            showV[SV_PULSE] = pulseFx; showV[SV_BEAT] = bt.phase; showV[SV_F0] = voiced ? f0s : 0;
+            showV[SV_OT] = otS; showV[SV_PROM] = promS; showV[SV_CHAOS] = chaosU; showV[SV_KICK] = kick;
+            showV[SV_SCENE] = (float)scene; showV[SV_CLIP] = (float)ShowClipIndex(); showV[SV_CLIPT] = ShowClipTime(now);
+            ShowEval(showV, showP, now);
+        }
+        ShowVideo sv = ShowVideoStep(GetTime(), showP);
+        if (sv.swapped) { Texture2D t = vidTex[0]; vidTex[0] = vidTex[1]; vidTex[1] = t; }
+        if (sv.cur)  UpdateTexture(vidTex[0], sv.cur);
+        if (sv.prev) UpdateTexture(vidTex[1], sv.prev);
+
+        if (sw != outW || shh != outH) {
+            if (outW) UnloadRenderTexture(rtOut);
+            rtOut = LoadRenderTexture(sw, shh); outW = sw; outH = shh;
+        }
+        BeginTextureMode(rtOut);
             ClearBackground(BLACK);
             if (fading) {   // previous scene underneath, the new one fades in (smoothstep)
                 float f = Clamp01(fadeT/FADE_SEC); f = f*f*(3 - 2*f);
@@ -891,6 +1027,55 @@ int main(void)
                 DrawTexturePro(physTex, (Rectangle){ 0, 0, (float)PHYS_W, (float)PHYS_H },
                                (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, pc);
                 EndBlendMode();
+            }
+            if (sv.active) {
+                float op = Clamp01(showP[SP_OPACITY]*gradeV[G_VIDEO]), t = showV[SV_T];
+                Vector3 tint = { showP[SP_VTINT], showP[SP_VTINT_G], showP[SP_VTINT_B] };
+                SetShaderValue(filmSh, locFilmT, &t, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmOp, &op, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmMix, &sv.mix, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmWarp, &showP[SP_WARP], SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmZoom, &showP[SP_ZOOM], SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmSat, &showP[SP_VSAT], SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmCon, &showP[SP_VCONTRAST], SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmTint, &tint, SHADER_UNIFORM_VEC3);
+                BeginShaderMode(filmSh); BeginBlendMode(sv.over ? BLEND_ALPHA : BLEND_ADDITIVE);
+                SetShaderValueTexture(filmSh, locFilmPrev, vidTex[1]);
+                DrawTexturePro(vidTex[0], (Rectangle){ 0, 0, VID_W, VID_H },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
+                EndBlendMode(); EndShaderMode();
+            }
+        EndTextureMode();
+
+        float grainNow = 0;
+        BeginDrawing();
+            {   // grade + grain over the whole picture; grain grows with loudness between grain_db_lo and grain_db_hi
+                float lo = showP[SP_GRAIN_DB_LO], hi = showP[SP_GRAIN_DB_HI];
+                float u = hi > lo ? Clamp01((dbS - lo)/(hi - lo)) : (dbS >= hi);
+                u = u*u*(3 - 2*u);
+                float grain = fmaxf(0, showP[SP_GRAIN_MIN] + (showP[SP_GRAIN_MAX] - showP[SP_GRAIN_MIN])*u)*gradeV[G_GRAIN];
+                float fps = showP[SP_GRAIN_FPS];
+                float seed = (float)fmod(fabs(showP[SP_GRAIN_SEED])*31.0 + (fps > 0 ? floor(GetTime()*fps) : 0), 997.0);
+                float hue = (showP[SP_HUE] + gradeV[G_HUE])*0.0174533f, sat = showP[SP_SAT]*gradeV[G_SAT];
+                float bright = showP[SP_BRIGHT]*gradeV[G_BRIGHT], con = showP[SP_CONTRAST]*gradeV[G_CONTRAST];
+                float wm = gradeV[G_WARM], mg = gradeV[G_MAGENTA];
+                Vector3 tint = { showP[SP_TINT]*(1 + 0.25f*wm)*(1 + 0.12f*mg), showP[SP_TINT_G]*(1 - 0.22f*mg),
+                                 showP[SP_TINT_B]*(1 - 0.25f*wm)*(1 + 0.12f*mg) };
+                float gsize = showP[SP_GRAIN_SIZE], gcol = Clamp01(showP[SP_GRAIN_COLOR]);
+                SetShaderValue(gradeSh, locGHue, &hue, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGSat, &sat, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGBright, &bright, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGCon, &con, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGTint, &tint, SHADER_UNIFORM_VEC3);
+                SetShaderValue(gradeSh, locGGrain, &grain, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGSize, &gsize, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGSeed, &seed, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gradeSh, locGColor, &gcol, SHADER_UNIFORM_FLOAT);
+                BeginShaderMode(gradeSh);
+                DrawTexturePro(rtOut.texture, (Rectangle){ 0, 0, (float)sw, (float)-shh },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
+                EndShaderMode();
+                grainNow = grain;
             }
 
             // HUD
@@ -1043,18 +1228,39 @@ int main(void)
                 DrawText("-", (int)(track.x - fsz*1.4f), (int)(track.y - fsz*0.3f), fsz, SKYBLUE);
                 DrawText("+", (int)(track.x + track.width + fsz*0.6f), (int)(track.y - fsz*0.3f), fsz, LIME);
             }
+            if (gradeUi) {   // palette sliders + video / grain readout
+                DrawRectangleRec(gradeBox, Fade(BLACK, 0.6f));
+                DrawRectangleLinesEx(gradeBox, 2, Fade(RAYWHITE, 0.5f));
+                DrawText(sv.active ? TextFormat("video: %s (%d)  [V] [,][.]   grain %.2f", sv.name, ShowClipCount(), grainNow)
+                                   : TextFormat("video: off (%d clips)  [V]   grain %.2f", ShowClipCount(), grainNow),
+                         (int)(gradeBox.x + fsz*0.5f), (int)(gradeBox.y + fsz*0.4f), (int)(fsz*0.8f), Fade(RAYWHITE, 0.8f));
+                for (int i = 0; i < N_GRADE; i++) {
+                    float ry = gradeBox.y + fsz*(1.6f + 1.4f*i);
+                    Rectangle tr = { gradeBox.x + fsz*8, ry + fsz*0.5f, gradeBox.width - fsz*11, fsz*0.4f };
+                    float u = (gradeV[i] - GRADE_UI[i].lo)/(GRADE_UI[i].hi - GRADE_UI[i].lo);
+                    float u0 = (GRADE_UI[i].def - GRADE_UI[i].lo)/(GRADE_UI[i].hi - GRADE_UI[i].lo);
+                    Color gc = i == gradeDrag ? ORANGE : (Color){ 190, 230, 150, 255 };
+                    DrawText(GRADE_UI[i].name, (int)(gradeBox.x + fsz*0.5f), (int)(ry + fsz*0.3f), (int)(fsz*0.8f), RAYWHITE);
+                    DrawRectangleRec(tr, Fade(RAYWHITE, 0.2f));
+                    DrawRectangle((int)(tr.x + tr.width*u0) - 1, (int)(tr.y - fsz*0.15f), 2, (int)(tr.height + fsz*0.3f), Fade(RAYWHITE, 0.5f));
+                    DrawCircleV((Vector2){ tr.x + tr.width*u, tr.y + tr.height/2 }, fsz*0.35f, gc);
+                    DrawText(i == G_HUE ? TextFormat("%+.0f", gradeV[i]) : TextFormat("%.2f", gradeV[i]),
+                             (int)(tr.x + tr.width + fsz*0.6f), (int)(ry + fsz*0.3f), (int)(fsz*0.8f), gc);
+                }
+            }
             }   // !hideUi
         EndDrawing();
 
         if (shotDir && GetTime() - startTime > shotNext) {
             TakeScreenshot(TextFormat("%s/shot_%05.1f.png", shotDir, shotNext));
-            TraceLog(LOG_INFO, "SHOT t=%.1f f0=%.0f ot=%.0f prom=%.2f zoom=%.2f scale=%.3e c=(%.12f,%.12f)",
-                     shotNext, f0s, otS, promS, zoomRate, scale, cx, cy);
+            TraceLog(LOG_INFO, "SHOT t=%.1f f0=%.0f ot=%.0f prom=%.2f zoom=%.2f scale=%.3e c=(%.12f,%.12f) level=%g db=%.1f pulse=%g kick=%g op=%g warp=%g",
+                     shotNext, f0s, otS, promS, zoomRate, scale, cx, cy, level, dbS, pulseFx, kick, showP[SP_OPACITY], showP[SP_WARP]);
             shotNext += 0.5;
             if (fileData && !getenv("VOICE_LOOP") && filePos >= fileWave.frameCount && shotNext > fileWave.frameCount/sampleRate + 1.5) break;
         }
     }
 
+    ShowShutdown();
     if (capOn) ma_device_uninit(&capDev);
     if (fileWave.data) UnloadWave(fileWave);
     UnloadRenderTexture(rt);

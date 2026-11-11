@@ -49,7 +49,7 @@
             libxkbcommon wayland alsa-lib libpulseaudio
           ];
         in pkgs.mkShell {
-          packages = with pkgs; [ cmake gcc git pkg-config wayland-scanner ] ++ runtimeLibs;
+          packages = with pkgs; [ cmake gcc git pkg-config wayland-scanner ffmpeg ] ++ runtimeLibs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
         };
       };

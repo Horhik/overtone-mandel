@@ -12,9 +12,14 @@ FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git
 FetchContent_MakeAvailable(raylib)
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/cpp)
-add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c ${SRC}/beat.c ${SRC}/physarum.c)
+add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c ${SRC}/beat.c ${SRC}/physarum.c ${SRC}/video.c ${SRC}/expr.c ${SRC}/show.c)
 target_include_directories(overtone_mandel PRIVATE ${raylib_SOURCE_DIR}/src)   # external/miniaudio.h
-target_link_libraries(overtone_mandel raylib m)
+target_link_libraries(overtone_mandel raylib m pthread)
+# video overlay runs ffmpeg as a child process; bake its absolute path in so it works outside `nix develop`
+find_program(FFMPEG ffmpeg)
+if(FFMPEG)
+  target_compile_definitions(overtone_mandel PRIVATE FFMPEG_BIN="${FFMPEG}")
+endif()
 
 # miniaudio dlopens the audio backends at runtime; bake their dirs into RUNPATH so the binary
 # finds them outside `nix develop` too (NixOS has no global /usr/lib)
