@@ -7,7 +7,8 @@ endif()
 
 include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git GIT_TAG master GIT_SHALLOW TRUE)
+# pinned: the commit everything was tested with (master moves; MA_NO_* in main.c must match its raudio.c)
+FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git GIT_TAG 1825891abca17841467c861252d07bf7ccbf3fb7)
 FetchContent_MakeAvailable(raylib)
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/cpp)
