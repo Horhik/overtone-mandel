@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Phone remote for the desktop overtone_mandel: a fullscreen WebView that finds the computer on the LAN
+// (UDP beacon on 8778) and opens the control page the desktop serves.
+android {
+    namespace 'com.overtone.remote'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.overtone.remote'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

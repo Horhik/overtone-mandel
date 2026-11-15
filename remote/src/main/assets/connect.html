@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Overtone Remote</title>
+<style>
+:root{--bg:#0b0d0c;--panel:#141816;--line:#2a312d;--fg:#dfe7e1;--dim:#7f8c85;--acc:#e8893a;--on:#9fdc82}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,sans-serif}
+body{display:flex;gap:28px;padding:22px 32px;align-items:flex-start}
+.col{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+p{margin:0;color:var(--dim);font-size:13px}
+.host{display:flex;align-items:center;gap:12px;border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px 14px;color:var(--fg);font:inherit;text-align:left;width:100%}
+.host b{font-weight:600}.host span{color:var(--dim);font-size:13px;margin-left:auto}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--on);box-shadow:0 0 8px var(--on);flex:none}
+.wait{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:14px;padding:6px 2px}
+.wait i{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(1turn)}}
+form{display:flex;gap:8px}
+input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--fg);font:inherit;padding:10px 12px}
+button.go{background:var(--acc);color:#1b1006;border:0;border-radius:10px;font:inherit;font-weight:600;padding:0 16px}
+#msg{color:var(--acc);font-size:13px;min-height:1em}
+</style>
+</head>
+<body>
+<div class="col">
+  <h1>Overtone Remote</h1>
+  <p>Телефон и компьютер в одной сети (например, ноутбук подключён к точке доступа телефона). На компьютере запущен <code>overtone_mandel</code>.</p>
+  <div id="msg"></div>
+  <div id="list"></div>
+  <div class="wait" id="wait"><i></i>ищу компьютер в сети…</div>
+</div>
+<div class="col">
+  <p>Вручную: адрес из терминала (под QR-кодом)</p>
+  <form id="f"><input id="addr" inputmode="url" autocomplete="off" placeholder="192.168.43.10:8777"><button class="go">OK</button></form>
+  <div id="lastw"></div>
+</div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const A = window.Android;
+const auto = A ? A.takeAuto() : false;
+const seen = {};
+if (location.hash.length > 1) $("#msg").textContent = decodeURIComponent(location.hash.slice(1));
+function go(hp) { hp = hp.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""); if (!hp) return; if (!/:\d+$/.test(hp)) hp += ":8777"; A ? A.connect(hp) : location.href = "http://" + hp + "/"; }
+function hostBtn(hp, name, live) {
+  const b = document.createElement("button"); b.className = "host";
+  b.innerHTML = (live ? '<div class="dot"></div>' : "") + "<b></b><span></span>";
+  b.querySelector("b").textContent = name || hp; b.querySelector("span").textContent = name ? hp : "";
+  b.onclick = () => go(hp);
+  return b;
+}
+window.found = (hp, name) => {
+  if (seen[hp]) return;
+  seen[hp] = 1;
+  $("#list").appendChild(hostBtn(hp, name, true));
+  if (auto && Object.keys(seen).length === 1) go(hp);
+};
+window.noBeacon = () => { $("#wait").textContent = "автопоиск недоступен — введи адрес вручную"; };
+const last = A ? A.last() : "";
+if (last) {
+  $("#addr").value = last;
+  const w = $("#lastw");
+  w.appendChild(Object.assign(document.createElement("p"), { textContent: "Последний:" }));
+  w.appendChild(hostBtn(last, "", false));
+}
+$("#f").onsubmit = e => { e.preventDefault(); go($("#addr").value); };
+</script>
+</body>
+</html>

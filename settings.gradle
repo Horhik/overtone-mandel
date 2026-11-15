@@ -13,4 +13,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = projectName
-include ':app'
+// ':app' (raylib visualiser for Android) is parked: the visualiser runs on the desktop, the phone is a remote
+include ':remote'

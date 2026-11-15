@@ -10,7 +10,8 @@ enum { SV_T, SV_LEVEL, SV_DB, SV_PULSE, SV_BEAT, SV_F0, SV_OT, SV_PROM, SV_CHAOS
 
 // parameter slots; three-component ones (tints) take 3 consecutive slots
 enum {
-    SP_OPACITY, SP_WARP, SP_ZOOM, SP_VSAT, SP_VCONTRAST, SP_VTINT, SP_VTINT_G, SP_VTINT_B,
+    SP_OPACITY, SP_WARP, SP_ZOOM, SP_VHUE, SP_VSAT, SP_VBRIGHT, SP_VCONTRAST, SP_VTINT, SP_VTINT_G, SP_VTINT_B,
+    SP_ZHUE, SP_ZSAT, SP_ZBRIGHT, SP_ZCONTRAST, SP_ZTINT, SP_ZTINT_G, SP_ZTINT_B,
     SP_HUE, SP_SAT, SP_BRIGHT, SP_CONTRAST, SP_TINT, SP_TINT_G, SP_TINT_B,
     SP_GRAIN_MIN, SP_GRAIN_MAX, SP_GRAIN_DB_LO, SP_GRAIN_DB_HI, SP_GRAIN_SIZE, SP_GRAIN_SEED, SP_GRAIN_COLOR, SP_GRAIN_FPS,
     SP_CLIP, SP_FADE, SP_MORPH,
@@ -37,6 +38,7 @@ int  ShowVideoOn(void);
 int  ShowClipCount(void);
 int  ShowClipIndex(void);                         // 0-based, -1 if none
 float ShowClipTime(double now);                   // seconds since the current clip started
+const char *ShowDir(void);                        // folder of the show file
 void ShowShutdown(void);
 
 #endif

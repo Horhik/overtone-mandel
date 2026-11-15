@@ -19,9 +19,16 @@ static const struct { const char *key; int slot, n; const char *def; } PDEF[] = 
     { "opacity",      SP_OPACITY,      1, "0.4 + 0.14*sin(t*0.052) + 0.06*sin(t*0.019 + 1.3)" },
     { "warp",         SP_WARP,         1, "0.01 + 0.025*pulse" },
     { "zoom",         SP_ZOOM,         1, "1.04 + 0.03*sin(t*0.031)" },
+    { "vhue",         SP_VHUE,         1, "0" },
     { "vsat",         SP_VSAT,         1, "0.4" },
+    { "vbright",      SP_VBRIGHT,      1, "1" },
     { "vcontrast",    SP_VCONTRAST,    1, "1.3" },
     { "vtint",        SP_VTINT,        3, "0.85, 0.9, 0.85" },
+    { "viz_hue",      SP_ZHUE,         1, "0" },
+    { "viz_sat",      SP_ZSAT,         1, "1" },
+    { "viz_bright",   SP_ZBRIGHT,      1, "1" },
+    { "viz_contrast", SP_ZCONTRAST,    1, "1" },
+    { "viz_tint",     SP_ZTINT,        3, "1.04, 0.9, 1.0" },
     { "hue",          SP_HUE,          1, "0" },
     { "sat",          SP_SAT,          1, "1" },
     { "bright",       SP_BRIGHT,       1, "1" },
@@ -65,9 +72,18 @@ static const char *TEMPLATE =
 "opacity   0.4 + 0.14*sin(t*0.052) + 0.06*sin(t*0.019 + 1.3)\n"
 "warp      0.01 + 0.025*pulse       # жидкая волна\n"
 "zoom      1.04 + 0.03*sin(t*0.031) # масштаб, «дыхание»\n"
+"vhue      0                        # поворот оттенка видео, градусы\n"
 "vsat      0.4                      # насыщенность видео (0 — ч/б)\n"
+"vbright   1\n"
 "vcontrast 1.3\n"
 "vtint     0.85, 0.9, 0.85          # множитель R, G, B\n"
+"\n"
+"# ---- визуализация (фрактал + Physarum), отдельно от видео; поверх — колесо и фейдеры с телефона\n"
+"viz_hue      0\n"
+"viz_sat      1\n"
+"viz_bright   1\n"
+"viz_contrast 1\n"
+"viz_tint     1.04, 0.9, 1.0   # чуть меньше зелёного\n"
 "\n"
 "# ---- вся картинка (поверх этого — ползунки палитры, клавиша G)\n"
 "hue       0           # поворот оттенка, градусы\n"
@@ -322,6 +338,7 @@ void ShowSetVideo(int on, double now)
 }
 
 int ShowVideoOn(void) { return videoOn; }
+const char *ShowDir(void) { return fileDir; }
 int ShowClipCount(void) { return nClips; }
 int ShowClipIndex(void) { return curIdx; }
 float ShowClipTime(double now) { return curIdx >= 0 ? (float)(now - clipStart) : 0; }

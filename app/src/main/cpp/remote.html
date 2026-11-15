@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d0c">
+<title>Overtone Remote</title>
+<style>
+:root{--bg:#0b0d0c;--panel:#141816;--line:#2a312d;--fg:#dfe7e1;--dim:#7f8c85;--acc:#e8893a;--on:#9fdc82}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.2 system-ui,-apple-system,sans-serif;overflow:hidden;touch-action:none;overscroll-behavior:none}
+#app{display:flex;height:100%;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#side{width:66px;flex:none;display:flex;flex-direction:column;gap:5px;padding:6px;border-right:1px solid var(--line)}
+#side .sep{height:1px;background:var(--line);margin:2px 4px;flex:none}
+.ib{flex:1;min-height:0;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--dim);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:9px;padding:0;font-family:inherit;overflow:hidden}
+.ib svg{width:24px;height:24px;flex:none}
+.ib span{white-space:nowrap}
+.ib.on{color:var(--on);border-color:#5f8a4d;background:#18231a}
+.ib.sel{color:var(--acc);border-color:var(--acc);background:#2a1d12}
+main{flex:1;display:flex;gap:6px;padding:6px;min-width:0}
+.panel{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 6px 4px;min-width:0}
+#pz{flex:10}#pd{flex:11}#pg{flex:3.6}
+.ph{display:flex;align-items:center;gap:5px;height:28px;flex:none;margin-bottom:4px}
+.ph b{font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.ph i{font-style:normal;color:var(--fg);font-size:12px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sm{border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--dim);height:26px;min-width:30px;padding:0 7px;font:inherit;font-size:13px;flex:none}
+.sm.on{color:var(--on);border-color:#5f8a4d}
+.pb{flex:1;display:flex;gap:8px;min-height:0;align-items:center}
+.wheel{position:relative;flex:none;touch-action:none}
+.wheel canvas{width:100%;height:100%;display:block}
+.puck{position:absolute;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px #000a,inset 0 0 0 2px #000a;pointer-events:none}
+.faders{flex:1;display:flex;gap:3px;min-width:0;height:100%}
+.fader{flex:1;display:flex;flex-direction:column;align-items:center;min-width:0;touch-action:none}
+.fv{font-size:11px;height:15px;font-variant-numeric:tabular-nums;color:var(--fg);white-space:nowrap}
+.ft{position:relative;flex:1;width:100%;min-height:40px}
+.ft::before{content:"";position:absolute;left:50%;top:8px;bottom:8px;width:4px;margin-left:-2px;background:#050605;border-radius:2px;box-shadow:inset 0 0 0 1px var(--line)}
+.tick{position:absolute;left:22%;right:22%;height:1px;background:var(--dim);opacity:.6}
+.cap{position:absolute;left:50%;width:min(40px,86%);height:30px;margin:-15px 0 0 0;transform:translateX(-50%);border-radius:5px;background:linear-gradient(#454e49,#262b29 48%,#1e2321 52%,#363e3a);border:1px solid #57625b;box-shadow:0 2px 4px #0008}
+.cap::after{content:"";position:absolute;left:12%;right:12%;top:50%;height:2px;margin-top:-1px;background:var(--acc);border-radius:1px}
+.fader.act .cap{border-color:var(--acc)}
+.fn{font-size:10px;color:var(--dim);height:14px;margin-top:3px;white-space:nowrap;overflow:hidden;max-width:100%}
+#lvl{width:34px;height:6px;border-radius:3px;background:#050605;overflow:hidden;flex:none}
+#lvl div{height:100%;width:0;background:var(--on)}
+#ov{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;font-size:15px;text-align:center;padding:20px;z-index:5}
+#ov.show{display:flex}
+#ovt{white-space:pre-line}
+#ov button,#app-link{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:10px;padding:10px 16px;font:inherit;text-decoration:none}
+#rot{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;font-size:16px;z-index:6;text-align:center;padding:20px}
+@media (orientation:portrait){#rot.ok{display:flex}}
+#app-link{position:fixed;right:10px;bottom:10px;padding:6px 10px;font-size:12px;display:none;z-index:4}
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="side"></nav>
+  <main>
+    <section class="panel" id="pz">
+      <div class="ph"><b>Визуал</b><i id="scn"></i><button class="sm" id="rz" title="сброс">↺</button></div>
+      <div class="pb"><div class="wheel" id="wz"></div><div class="faders" id="fz"></div></div>
+    </section>
+    <section class="panel" id="pd">
+      <div class="ph"><b>Видео</b><button class="sm" id="von">вкл</button><button class="sm" id="vprev">◀</button><button class="sm" id="vnext">▶</button><i id="clip"></i><button class="sm" id="rd" title="сброс">↺</button></div>
+      <div class="pb"><div class="wheel" id="wd"></div><div class="faders" id="fd"></div></div>
+    </section>
+    <section class="panel" id="pg">
+      <div class="ph"><div id="lvl"><div></div></div><i id="bpm" style="text-align:right;color:var(--dim)"></i></div>
+      <div class="pb"><div class="faders" id="fg"></div></div>
+    </section>
+  </main>
+</div>
+<div id="ov"><div id="ovt">Подключение…</div><button id="ovb" style="display:none">Выбрать другой компьютер</button></div>
+<div id="rot">Поверни телефон горизонтально</div>
+<a id="app-link">открыть в приложении</a>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const inApp = /OvertoneRemote/.test(navigator.userAgent);
+const NAMES = { vz_hue: "тон", vz_sat: "насыщ", vz_bright: "ярк", vz_con: "контр",
+  vd_op: "плотн", vd_hue: "тон", vd_sat: "насыщ", vd_bright: "ярк", vd_con: "контр",
+  grain: "зерно", beat: "доля" };
+const SVG = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">${p}</svg>`;
+const ICONS = {
+  "organism: mandala": ["мандала", SVG('<circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><circle cx="6.8" cy="9" r="3"/><circle cx="17.2" cy="9" r="3"/><circle cx="6.8" cy="15" r="3"/><circle cx="17.2" cy="15" r="3"/>')],
+  "organism: cells": ["клетки", SVG('<circle cx="8" cy="9" r="4.5"/><circle cx="16.5" cy="8" r="3.5"/><circle cx="14" cy="16.5" r="4.5"/><circle cx="8" cy="9" r="1.2"/><circle cx="14" cy="16.5" r="1.2"/>')],
+  "organism: vessels": ["сосуды", SVG('<path d="M12 22V13M12 13L6 6M12 13l5-4M17 9l2-5M17 9l4 1M6 6L3 7M6 6l1-4M12 17l-5 2"/>')],
+  "newton": ["ньютон", SVG('<circle cx="12" cy="5" r="1.6"/><circle cx="5.5" cy="17" r="1.6"/><circle cx="18.5" cy="17" r="1.6"/><path d="M12 12L12 2.5M12 12L3 18M12 12l9 6" opacity=".55"/><circle cx="12" cy="12" r="9.5" opacity=".35"/>')],
+  "apollonian": ["аполлон", SVG('<circle cx="12" cy="12" r="9.5"/><circle cx="7.5" cy="12" r="4.8"/><circle cx="16.8" cy="12" r="4.6"/><circle cx="12" cy="5" r="2.1"/><circle cx="12" cy="19" r="2.1"/>')],
+  "drift": ["drift", SVG('<path d="M12 12a2 2 0 1 1 2 2a4 4 0 1 1-4-4a6 6 0 1 1 6 6a8 8 0 1 1-8-8"/>')],
+  "dive + colour": ["dive", SVG('<path d="M12 12a2 2 0 1 0 2 2a4 4 0 1 0-4-4a6 6 0 1 0 6 6"/><path d="M20 4l-4 4M20 4v4M20 4h-4"/>')],
+};
+const I_PHYS = SVG('<path d="M4 18c3-1 4-5 8-6s5-5 8-7M12 12c1 3 4 4 6 7M8 15c-1-3-4-4-5-7M12 12c-2-2-2-5-1-8"/><circle cx="12" cy="12" r="1.5"/>');
+const I_AUTO = SVG('<path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3"/><path d="M18 3v4h-4M6 21v-4h4"/><path d="M10 9.5v5l4-2.5z" fill="currentColor" stroke="none"/>');
+const I_EYE = SVG('<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>');
+const I_EYEOFF = SVG('<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><path d="M4 4l16 16"/>');
+
+// ---------------------------------------------------------------- sending: newest value per key, one request at a time
+const pending = {}; let inflight = false;
+const touched = {};   // key -> time of the last local change (state polls don't overwrite fresh local values)
+function send(k, v) { pending[k] = v; touched[k] = Date.now(); pump(); }
+function pump() {
+  if (inflight) return;
+  const ks = Object.keys(pending);
+  if (!ks.length) return;
+  const q = ks.map(k => k + "=" + (+pending[k]).toFixed(4)).join("&");
+  ks.forEach(k => delete pending[k]);
+  inflight = true;
+  fetch("/set?" + q, { cache: "no-store" }).catch(() => {}).finally(() => { inflight = false; setTimeout(pump, 25); });
+}
+const fresh = k => touched[k] && Date.now() - touched[k] < 1500;
+
+// ---------------------------------------------------------------- double tap helper
+function dbl(el, fn) {
+  let last = 0;
+  el.addEventListener("pointerdown", e => { const t = Date.now(); if (t - last < 320) { fn(); last = 0; e.stopImmediatePropagation(); } else last = t; }, true);
+}
+
+// ---------------------------------------------------------------- fader (relative drag, double tap = default)
+const faders = {};
+function Fader(key, host) {
+  const el = document.createElement("div"); el.className = "fader";
+  el.innerHTML = `<div class="fv"></div><div class="ft"><div class="tick"></div><div class="cap"></div></div><div class="fn">${NAMES[key] || key}</div>`;
+  host.appendChild(el);
+  const fv = el.querySelector(".fv"), ft = el.querySelector(".ft"), cap = el.querySelector(".cap"), tick = el.querySelector(".tick");
+  const f = { v: 0, lo: 0, hi: 1, def: 0, drag: false };
+  const fmt = v => key.endsWith("hue") ? (v > 0 ? "+" : "") + Math.round(v) + "°" : v.toFixed(2);
+  f.draw = () => {
+    const h = ft.clientHeight - 16, u = (f.v - f.lo) / (f.hi - f.lo), u0 = (f.def - f.lo) / (f.hi - f.lo);
+    cap.style.top = (8 + (1 - u) * h) + "px";
+    tick.style.top = (8 + (1 - u0) * h) + "px";
+    fv.textContent = fmt(f.v);
+  };
+  f.set = (v, local) => {
+    f.v = Math.min(f.hi, Math.max(f.lo, v)); f.draw();
+    if (local) send(key, f.v);
+  };
+  let y0 = 0, v0 = 0;
+  ft.addEventListener("pointerdown", e => { ft.setPointerCapture(e.pointerId); f.drag = true; el.classList.add("act"); y0 = e.clientY; v0 = f.v; });
+  ft.addEventListener("pointermove", e => {
+    if (!f.drag) return;
+    const h = Math.max(ft.clientHeight - 16, 40);
+    f.set(v0 - (e.clientY - y0) / h * (f.hi - f.lo), true);
+  });
+  const up = () => { f.drag = false; el.classList.remove("act"); };
+  ft.addEventListener("pointerup", up); ft.addEventListener("pointercancel", up);
+  dbl(ft, () => { f.set(f.def, true); f.drag = false; });
+  faders[key] = f;
+  return f;
+}
+
+// ---------------------------------------------------------------- colour wheel: hue by angle, strength by radius
+const wheels = [];
+function Wheel(kx, ky, host) {
+  const cv = document.createElement("canvas"), puck = document.createElement("div");
+  puck.className = "puck"; host.appendChild(cv); host.appendChild(puck);
+  const w = { x: 0, y: 0, drag: false, host };
+  w.render = () => {
+    const s = host.clientWidth, dpr = window.devicePixelRatio || 1, n = Math.max(2, Math.round(s * dpr));
+    if (cv.width === n) return;
+    cv.width = cv.height = n;
+    const ctx = cv.getContext("2d"), img = ctx.createImageData(n, n), d = img.data, c = n / 2;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const dx = (i + .5 - c) / c, dy = -(j + .5 - c) / c, r = Math.hypot(dx, dy), o = (j * n + i) * 4;
+      if (r > 1) continue;
+      let h = Math.atan2(dy, dx) / (2 * Math.PI); h -= Math.floor(h);
+      const rgb = [5, 3, 1].map(m => { const k = (m + h * 6) % 6; return 1 - Math.max(0, Math.min(k, 4 - k, 1)); });
+      const sat = Math.min(r, 1) * .85, val = .78;
+      for (let q = 0; q < 3; q++) d[o + q] = 255 * val * (1 - sat * (1 - rgb[q]));
+      d[o + 3] = 255 * Math.min(1, (1 - r) * c);   // soft edge
+    }
+    ctx.putImageData(img, 0, 0);
+    ctx.strokeStyle = "rgba(0,0,0,.35)"; ctx.lineWidth = dpr;
+    [0.5].forEach(rr => { ctx.beginPath(); ctx.arc(c, c, rr * c, 0, 7); ctx.stroke(); });
+    ctx.beginPath(); ctx.moveTo(c - 6 * dpr, c); ctx.lineTo(c + 6 * dpr, c); ctx.moveTo(c, c - 6 * dpr); ctx.lineTo(c, c + 6 * dpr); ctx.stroke();
+  };
+  w.draw = () => { puck.style.left = (50 + w.x * 50) + "%"; puck.style.top = (50 - w.y * 50) + "%"; };
+  w.set = (x, y, local) => {
+    const r = Math.hypot(x, y); if (r > 1) { x /= r; y /= r; }
+    w.x = x; w.y = y; w.draw();
+    if (local) { send(kx, x); send(ky, y); }
+  };
+  const at = e => { const b = cv.getBoundingClientRect(); w.set((e.clientX - b.left) / b.width * 2 - 1, 1 - (e.clientY - b.top) / b.height * 2, true); };
+  cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); w.drag = true; at(e); });
+  cv.addEventListener("pointermove", e => { if (w.drag) at(e); });
+  const up = () => { w.drag = false; };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+  dbl(cv, () => { w.drag = false; w.set(0, 0, true); });
+  w.kx = kx; w.ky = ky;
+  wheels.push(w);
+  return w;
+}
+
+["vz_hue", "vz_sat", "vz_bright", "vz_con"].forEach(k => Fader(k, $("#fz")));
+["vd_op", "vd_hue", "vd_sat", "vd_bright", "vd_con"].forEach(k => Fader(k, $("#fd")));
+["grain", "beat"].forEach(k => Fader(k, $("#fg")));
+Wheel("vz_wx", "vz_wy", $("#wz"));
+Wheel("vd_wx", "vd_wy", $("#wd"));
+
+function layout() {
+  for (const w of wheels) {
+    const pb = w.host.parentElement, s = Math.max(60, Math.min(pb.clientHeight - 4, pb.clientWidth * 0.52));
+    w.host.style.width = w.host.style.height = s + "px";
+    w.render(); w.draw();
+  }
+  Object.values(faders).forEach(f => f.draw());
+}
+window.addEventListener("resize", () => setTimeout(layout, 50));
+if (window.ResizeObserver) new ResizeObserver(() => layout()).observe(document.querySelector("main"));
+
+// ---------------------------------------------------------------- sidebar, buttons
+let S = {}, sceneSig = "";
+const side = $("#side");
+function btn(icon, label, fn) {
+  const b = document.createElement("button"); b.className = "ib";
+  b.innerHTML = icon + `<span>${label}</span>`;
+  b.addEventListener("click", fn);
+  side.appendChild(b);
+  return b;
+}
+let bPhys, bAuto, bHide, sceneBtns = [];
+function buildSide() {
+  side.innerHTML = ""; sceneBtns = [];
+  bPhys = btn(I_PHYS, "physarum", () => { S.phys = !S.phys; send("phys", S.phys ? 1 : 0); paint(); });
+  side.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
+  for (const [i, name] of S.scenes || []) {
+    const ic = ICONS[name] || [name, SVG('<circle cx="12" cy="12" r="8"/>')];
+    const b = btn(ic[1], ic[0], () => { S.scene = i; send("scene", i); paint(); });
+    b.dataset.i = i; sceneBtns.push(b);
+  }
+  side.appendChild(Object.assign(document.createElement("div"), { className: "sep" }));
+  bAuto = btn(I_AUTO, "авто", () => { S.auto = !S.auto; send("auto", S.auto ? 1 : 0); paint(); });
+  bHide = btn(I_EYE, "HUD", () => { S.hide = !S.hide; send("hide", S.hide ? 1 : 0); paint(); });
+}
+function paint() {
+  bPhys.classList.toggle("on", !!S.phys);
+  sceneBtns.forEach(b => b.classList.toggle("sel", +b.dataset.i === S.scene));
+  bAuto.classList.toggle("on", !!S.auto);
+  bAuto.querySelector("span").textContent = S.auto ? Math.round(S.next) + " с" : "авто";
+  bHide.classList.toggle("on", !S.hide);
+  bHide.firstChild.outerHTML = S.hide ? I_EYEOFF : I_EYE;
+  const sc = (S.scenes || []).find(x => x[0] === S.scene);
+  $("#scn").textContent = sc ? (ICONS[sc[1]] ? ICONS[sc[1]][0] : sc[1]) : "";
+  $("#von").classList.toggle("on", !!S.video);
+  $("#von").textContent = S.video ? "вкл" : "выкл";
+  $("#clip").textContent = S.video ? (S.clip || (S.clips ? "" : "нет роликов")) : "";
+  $("#bpm").textContent = S.bpm ? S.bpm + " bpm" : "";
+  $("#lvl div").style.width = Math.round((S.level || 0) * 100) + "%";
+}
+$("#von").onclick = () => { S.video = !S.video; send("video", S.video ? 1 : 0); paint(); };
+$("#vprev").onclick = () => send("clip", -1);
+$("#vnext").onclick = () => send("clip", 1);
+$("#rz").onclick = () => { send("reset_vz", 1); resetLocal("vz"); };
+$("#rd").onclick = () => { send("reset_vd", 1); resetLocal("vd"); };
+function resetLocal(p) {
+  for (const k in faders) if (k.startsWith(p)) { faders[k].set(faders[k].def); touched[k] = Date.now(); }
+  for (const w of wheels) if (w.kx.startsWith(p)) { w.set(0, 0); touched[w.kx] = touched[w.ky] = Date.now(); }
+}
+
+// ---------------------------------------------------------------- state polling, connection overlay
+let fails = 0, first = true;
+async function poll() {
+  const ac = new AbortController(), to = setTimeout(() => ac.abort(), 1500);
+  try {
+    const r = await fetch("/state", { cache: "no-store", signal: ac.signal });
+    const st = await r.json();
+    fails = 0; $("#ov").classList.remove("show");
+    const sig = JSON.stringify(st.scenes);
+    S = Object.assign(S, st);
+    if (sig !== sceneSig) { sceneSig = sig; buildSide(); }
+    for (const k in st.vals) {
+      const [v, lo, hi, def] = st.vals[k], f = faders[k];
+      if (f) { f.lo = lo; f.hi = hi; f.def = def; if (!f.drag && !fresh(k)) f.set(v); else f.draw(); }
+    }
+    for (const w of wheels) {
+      const vx = st.vals[w.kx], vy = st.vals[w.ky];
+      if (vx && vy && !w.drag && !fresh(w.kx)) w.set(vx[0], vy[0]);
+    }
+    paint();
+    if (first) { first = false; layout(); }
+  } catch (e) {
+    if (++fails >= 2) {
+      $("#ovt").textContent = "Нет связи с " + location.host + "…\nпереподключаюсь";
+      $("#ov").classList.add("show");
+    }
+  } finally { clearTimeout(to); }
+}
+if (inApp && window.Android) { $("#ovb").style.display = ""; $("#ovb").onclick = () => Android.disconnect(); }
+setInterval(poll, 500);
+poll(); layout();
+
+// ---------------------------------------------------------------- plain browser: fullscreen + landscape, link to the app
+if (!inApp) {
+  $("#rot").classList.add("ok");
+  document.addEventListener("pointerdown", () => {
+    const d = document.documentElement;
+    if (!document.fullscreenElement && d.requestFullscreen)
+      d.requestFullscreen({ navigationUI: "hide" }).then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(() => {})).catch(() => {});
+  }, { once: true });
+  if (/Android/.test(navigator.userAgent)) {
+    const a = $("#app-link");
+    a.href = "intent://" + location.host + "/#Intent;scheme=overtone;package=com.overtone.remote;end";
+    a.style.display = "block";
+    setTimeout(() => a.style.display = "none", 15000);
+  }
+}
+</script>
+</body>
+</html>

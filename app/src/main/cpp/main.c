@@ -35,6 +35,7 @@
 #include "beat.h"
 #include "physarum.h"
 #include "show.h"
+#include "remote.h"
 
 // ------------------------------------------------------------- tuning
 #define F0_LO        70.0f     // Гц: диапазон ползунка базового тона
@@ -69,6 +70,7 @@ static const struct { double x, y; const char *name; } DIVES[] = {
 
 // Scenes. M steps through all of them, A = auto show: every SCENE_SEC a cross-fade (FADE_SEC) to the next
 // one in SHOW. SHOW never puts two Mandelbrot scenes next to each other (they share one reference orbit).
+// The two Mandelbrot scenes are too heavy for a laptop without a GPU: off unless MANDEL=1.
 enum { MODE_DRIFT, MODE_DIVE, MODE_ORG, MODE_NEWTON, MODE_APOLLO };
 static const struct { int mode, preset; const char *name; } SCENES[] = {
     { MODE_DRIFT,  0, "drift"              },
@@ -81,6 +83,8 @@ static const struct { int mode, preset; const char *name; } SCENES[] = {
 };
 #define N_SCENES ((int)(sizeof SCENES/sizeof SCENES[0]))
 static const int SHOW[] = { 1, 2, 5, 3, 6, 4 };
+static int mandelOn;
+static int SceneOn(int i) { return mandelOn || SCENES[i].mode >= MODE_ORG; }
 #define N_SHOW ((int)(sizeof SHOW/sizeof SHOW[0]))
 static const struct { float c[3], zoom; } ORG_PRESETS[] = {
     { { -0.45f, -0.55f, -0.85f }, 1.0f },   // mandalas, rings, cells
@@ -386,14 +390,19 @@ static const char *FS_FILM =
 "uniform float uSat;\n"
 "uniform float uContrast;\n"
 "uniform vec3  uTint;\n"
+"uniform float uHue;\n"          // radians
+"uniform float uBright;\n"
 "void main() {\n"
 "    vec2 c = (fragTexCoord - 0.5) / uZoom;\n"
 "    c += uWarp * vec2(sin(c.y * 9.0 + uTime * 0.50) + 0.5 * sin(c.x * 17.0 - uTime * 0.70),\n"
 "                      sin(c.x * 8.0 - uTime * 0.43) + 0.5 * sin(c.y * 15.0 + uTime * 0.61));\n"
 "    vec2 uv = c + 0.5;\n"
 "    vec3 col = mix(texture2D(uPrev, uv).rgb, texture2D(texture0, uv).rgb, uMix);\n"
+"    vec3 k = vec3(0.57735);\n"
+"    float ch = cos(uHue), sh = sin(uHue);\n"
+"    col = col * ch + cross(k, col) * sh + k * dot(k, col) * (1.0 - ch);\n"
 "    col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, uSat);\n"
-"    col = clamp((col - 0.5) * uContrast + 0.5, 0.0, 1.0) * uTint;\n"
+"    col = clamp((col - 0.5) * uContrast + 0.5, 0.0, 1.0) * uBright * uTint;\n"
 "    gl_FragColor = vec4(col, uOp);\n"
 "}\n";
 
@@ -434,6 +443,50 @@ static const struct { const char *name; float lo, hi, def; } GRADE_UI[] = {
 };
 #define N_GRADE ((int)(sizeof GRADE_UI/sizeof GRADE_UI[0]))
 enum { G_HUE, G_SAT, G_BRIGHT, G_CONTRAST, G_WARM, G_MAGENTA, G_VIDEO, G_GRAIN };
+
+// phone remote (remote.c): per-layer grade on top of the show file. Saved to remote.txt next to show.txt.
+// Colour wheels: position (wx, wy) in the unit circle = tint towards that hue, stronger further from the centre.
+static const struct { const char *key, *name; float lo, hi, def; } RV[] = {
+    { "vz_hue", "hue", -180, 180, 0 }, { "vz_sat", "sat", 0, 2, 1 }, { "vz_bright", "bright", 0, 2, 1 },
+    { "vz_con", "contrast", 0.5f, 2, 1 }, { "vz_wx", "", -1, 1, 0 }, { "vz_wy", "", -1, 1, 0 },
+    { "vd_op", "opacity", 0, 2.5f, 1 }, { "vd_hue", "hue", -180, 180, 0 }, { "vd_sat", "sat", 0, 2, 1 },
+    { "vd_bright", "bright", 0, 2, 1 }, { "vd_con", "contrast", 0.5f, 2, 1 }, { "vd_wx", "", -1, 1, 0 },
+    { "vd_wy", "", -1, 1, 0 }, { "grain", "grain", 0, 3, 1 }, { "beat", "beat", 0, 1.5f, BEAT_AMT },
+};
+#define N_RV ((int)(sizeof RV/sizeof RV[0]))
+enum { R_ZHUE, R_ZSAT, R_ZBRIGHT, R_ZCON, R_ZWX, R_ZWY, R_DOP, R_DHUE, R_DSAT, R_DBRIGHT, R_DCON, R_DWX, R_DWY, R_GRAIN, R_BEAT };
+
+static Vector3 WheelTint(float x, float y)
+{
+    float r = sqrtf(x*x + y*y);
+    if (r > 1) { x /= r; y /= r; r = 1; }
+    float h = atan2f(y, x)/6.2831853f; h -= floorf(h);
+    float c[3];
+    for (int i = 0; i < 3; i++) {   // fully saturated hue, same formula as the wheel on the phone
+        float k = fmodf(5 - 2*i + h*6, 6);
+        c[i] = 1 - fmaxf(0, fminf(fminf(k, 4 - k), 1));
+    }
+    float l = 0.299f*c[0] + 0.587f*c[1] + 0.114f*c[2];
+    return (Vector3){ 1 + 0.75f*r*(c[0] - l), 1 + 0.75f*r*(c[1] - l), 1 + 0.75f*r*(c[2] - l) };
+}
+
+static void RemoteLoad(const char *path, float *rv)
+{
+    FILE *f = fopen(path, "r");
+    char key[32]; float v;
+    while (f && fscanf(f, "%31s %f", key, &v) == 2)
+        for (int i = 0; i < N_RV; i++) if (!strcmp(key, RV[i].key)) rv[i] = fmaxf(RV[i].lo, fminf(RV[i].hi, v));
+    if (f) fclose(f);
+}
+
+static void RemoteSave(const char *path, const float *rv)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "# phone remote values, written by overtone_mandel\n");
+    for (int i = 0; i < N_RV; i++) fprintf(f, "%s %g\n", RV[i].key, rv[i]);
+    fclose(f);
+}
 
 static Shader LoadShaderBody(const char *body);
 static Shader LoadMandelShader(void) { return LoadShaderBody(FS_BODY); }
@@ -561,6 +614,12 @@ int main(int argc, char **argv)
     int locFilmWarp = GetShaderLocation(filmSh, "uWarp"), locFilmZoom = GetShaderLocation(filmSh, "uZoom");
     int locFilmSat = GetShaderLocation(filmSh, "uSat"), locFilmCon = GetShaderLocation(filmSh, "uContrast");
     int locFilmTint = GetShaderLocation(filmSh, "uTint");
+    int locFilmHue = GetShaderLocation(filmSh, "uHue"), locFilmBright = GetShaderLocation(filmSh, "uBright");
+    // the visualisation (scene + physarum) gets its own grade: the same shader as the final pass, without grain
+    Shader vizSh = LoadShaderBody(FS_GRADE);
+    int locZHue = GetShaderLocation(vizSh, "uHue"), locZSat = GetShaderLocation(vizSh, "uSat");
+    int locZBright = GetShaderLocation(vizSh, "uBright"), locZCon = GetShaderLocation(vizSh, "uContrast");
+    int locZTint = GetShaderLocation(vizSh, "uTint"), locZGrain = GetShaderLocation(vizSh, "uGrain");
     Shader gradeSh = LoadShaderBody(FS_GRADE);
     int locGHue = GetShaderLocation(gradeSh, "uHue"), locGSat = GetShaderLocation(gradeSh, "uSat");
     int locGBright = GetShaderLocation(gradeSh, "uBright"), locGCon = GetShaderLocation(gradeSh, "uContrast");
@@ -577,8 +636,17 @@ int main(int argc, char **argv)
     float gradeV[N_GRADE];
     for (int i = 0; i < N_GRADE; i++) gradeV[i] = GRADE_UI[i].def;
     int gradeUi = 0, gradeDrag = -1;
-    RenderTexture2D rtOut = { 0 };   // the whole picture before the grade pass
+    RenderTexture2D rtOut = { 0 }, rtViz = { 0 };   // the whole picture before the grade pass; the visualisation alone
     int outW = 0, outH = 0;
+    // phone remote: values (rv) on top of the show file, saved next to it
+    float rv[N_RV];
+    for (int i = 0; i < N_RV; i++) rv[i] = RV[i].def;
+    char rvPath[600];
+    snprintf(rvPath, sizeof rvPath, "%s/remote.txt", ShowDir());
+    RemoteLoad(rvPath, rv);
+    double rvSaveAt = -1;
+    RemoteStart(getenv("REMOTE_PORT") ? atoi(getenv("REMOTE_PORT")) : REMOTE_PORT);
+    int stateTick = 0;
     int noteW = 0, domNote = 0; float chaosU = 0;
 
     Image refImg = { refBuf, REF_W, REF_H, 1, PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 };
@@ -589,8 +657,10 @@ int main(int argc, char **argv)
     int rtW = 0, rtH = 0;
 
     double cx = START_X, cy = START_Y, scale = START_SCALE;
+    mandelOn = getenv("MANDEL") != NULL;
     int scene = getenv("SCENE") ? atoi(getenv("SCENE")) % N_SCENES
               : getenv("ORGANISM") ? 2 : getenv("COLOR_MODE") ? 1 : 0;
+    if (!SceneOn(scene)) scene = 2;
     int prevScene = -1, autoOn = getenv("AUTO") != NULL, hideUi = getenv("HIDE_UI") != NULL;
     if (hideUi) HideCursor();
     float fadeT = FADE_SEC, sceneT = 0, sceneSec = getenv("SCENE_SEC") ? (float)atof(getenv("SCENE_SEC")) : SCENE_SEC;
@@ -619,6 +689,7 @@ int main(int argc, char **argv)
     int voiced = 0, analysisTick = 0;
     double permTimer = 0; int asked = 0;
     float window[VOICE_N];
+    beatAmt = getenv("BEAT") ? beatAmt : rv[R_BEAT];
     double startTime = GetTime(), fileStart = startTime;
 
     while (!WindowShouldClose()) {
@@ -733,8 +804,33 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_LEFT_BRACKET))  beatAmt = fmaxf(0.0f, beatAmt - 0.1f);
         {   // scenes: M = next one, A = auto show, H / F11 = hide the interface and cursor (for an audience / streaming)
             int next = -1;
-            if (IsKeyPressed(KEY_M) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, modeBtn)))
+            if (IsKeyPressed(KEY_M) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, modeBtn))) {
                 next = (scene + 1) % N_SCENES;
+                while (!SceneOn(next)) next = (next + 1) % N_SCENES;
+            }
+            {   // phone remote commands
+                RemoteCmd cmd[64];
+                int n = RemotePoll(cmd, 64);
+                for (int i = 0; i < n; i++) {
+                    const char *k = cmd[i].key; float v = cmd[i].val;
+                    if (!strcmp(k, "scene")) { int s = (int)v; if (s >= 0 && s < N_SCENES && SceneOn(s) && s != scene) next = s; }
+                    else if (!strcmp(k, "phys")) physOn = v != 0;
+                    else if (!strcmp(k, "video")) { if ((v != 0) != ShowVideoOn()) ShowSetVideo(v != 0, GetTime()); }
+                    else if (!strcmp(k, "clip")) ShowSkip(v < 0 ? -1 : 1, GetTime());
+                    else if (!strcmp(k, "auto")) { autoOn = v != 0; sceneT = 0; }
+                    else if (!strcmp(k, "hide")) { hideUi = v != 0; if (hideUi) HideCursor(); else ShowCursor(); }
+                    else if (!strcmp(k, "reset_vz") || !strcmp(k, "reset_vd")) {
+                        for (int j = 0; j < N_RV; j++) if (!strncmp(RV[j].key, k + 6, 2)) rv[j] = RV[j].def;
+                        rvSaveAt = GetTime() + 2;
+                    } else
+                        for (int j = 0; j < N_RV; j++) if (!strcmp(k, RV[j].key)) {
+                            rv[j] = fmaxf(RV[j].lo, fminf(RV[j].hi, v));
+                            if (j == R_BEAT) beatAmt = rv[j];
+                            rvSaveAt = GetTime() + 2;
+                        }
+                }
+                if (rvSaveAt > 0 && GetTime() > rvSaveAt) { RemoteSave(rvPath, rv); rvSaveAt = -1; }
+            }
             if (IsKeyPressed(KEY_A) || (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mp, autoBtn))) {
                 autoOn = !autoOn; sceneT = 0;
             }
@@ -746,7 +842,8 @@ int main(int argc, char **argv)
             if (autoOn && sceneT >= sceneSec && fadeT >= FADE_SEC) {
                 int k = 0;
                 for (int i = 0; i < N_SHOW; i++) if (SHOW[i] == scene) k = i;
-                next = SHOW[(k + 1) % N_SHOW];
+                do k = (k + 1) % N_SHOW; while (!SceneOn(SHOW[k]));
+                next = SHOW[k];
             }
             if (next >= 0) {
                 int bothMandel = SCENES[next].mode <= MODE_DIVE && SCENES[scene].mode <= MODE_DIVE;
@@ -1006,10 +1103,12 @@ int main(int argc, char **argv)
         if (sv.prev) UpdateTexture(vidTex[1], sv.prev);
 
         if (sw != outW || shh != outH) {
-            if (outW) UnloadRenderTexture(rtOut);
+            if (outW) { UnloadRenderTexture(rtOut); UnloadRenderTexture(rtViz); }
             rtOut = LoadRenderTexture(sw, shh); outW = sw; outH = shh;
+            rtViz = LoadRenderTexture(sw, shh);
         }
-        BeginTextureMode(rtOut);
+        rv[R_BEAT] = beatAmt;
+        BeginTextureMode(rtViz);
             ClearBackground(BLACK);
             if (fading) {   // previous scene underneath, the new one fades in (smoothstep)
                 float f = Clamp01(fadeT/FADE_SEC); f = f*f*(3 - 2*f);
@@ -1028,16 +1127,39 @@ int main(int argc, char **argv)
                                (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, pc);
                 EndBlendMode();
             }
+        EndTextureMode();
+        BeginTextureMode(rtOut);
+            {   // visualisation grade: show file (viz_*) x phone remote
+                float hue = (showP[SP_ZHUE] + rv[R_ZHUE])*0.0174533f, sat = showP[SP_ZSAT]*rv[R_ZSAT];
+                float bright = showP[SP_ZBRIGHT]*rv[R_ZBRIGHT], con = showP[SP_ZCONTRAST]*rv[R_ZCON], zero = 0;
+                Vector3 wt = WheelTint(rv[R_ZWX], rv[R_ZWY]);
+                Vector3 tint = { showP[SP_ZTINT]*wt.x, showP[SP_ZTINT_G]*wt.y, showP[SP_ZTINT_B]*wt.z };
+                SetShaderValue(vizSh, locZHue, &hue, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(vizSh, locZSat, &sat, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(vizSh, locZBright, &bright, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(vizSh, locZCon, &con, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(vizSh, locZTint, &tint, SHADER_UNIFORM_VEC3);
+                SetShaderValue(vizSh, locZGrain, &zero, SHADER_UNIFORM_FLOAT);
+                BeginShaderMode(vizSh);
+                DrawTexturePro(rtViz.texture, (Rectangle){ 0, 0, (float)sw, (float)-shh },
+                               (Rectangle){ 0, 0, (float)sw, (float)shh }, (Vector2){ 0, 0 }, 0, WHITE);
+                EndShaderMode();
+            }
             if (sv.active) {
-                float op = Clamp01(showP[SP_OPACITY]*gradeV[G_VIDEO]), t = showV[SV_T];
-                Vector3 tint = { showP[SP_VTINT], showP[SP_VTINT_G], showP[SP_VTINT_B] };
+                float op = Clamp01(showP[SP_OPACITY]*gradeV[G_VIDEO]*rv[R_DOP]), t = showV[SV_T];
+                Vector3 wt = WheelTint(rv[R_DWX], rv[R_DWY]);
+                Vector3 tint = { showP[SP_VTINT]*wt.x, showP[SP_VTINT_G]*wt.y, showP[SP_VTINT_B]*wt.z };
+                float vhue = (showP[SP_VHUE] + rv[R_DHUE])*0.0174533f, vsat = showP[SP_VSAT]*rv[R_DSAT];
+                float vbright = showP[SP_VBRIGHT]*rv[R_DBRIGHT], vcon = showP[SP_VCONTRAST]*rv[R_DCON];
+                SetShaderValue(filmSh, locFilmHue, &vhue, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmBright, &vbright, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmT, &t, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmOp, &op, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmMix, &sv.mix, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmWarp, &showP[SP_WARP], SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmZoom, &showP[SP_ZOOM], SHADER_UNIFORM_FLOAT);
-                SetShaderValue(filmSh, locFilmSat, &showP[SP_VSAT], SHADER_UNIFORM_FLOAT);
-                SetShaderValue(filmSh, locFilmCon, &showP[SP_VCONTRAST], SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmSat, &vsat, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(filmSh, locFilmCon, &vcon, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(filmSh, locFilmTint, &tint, SHADER_UNIFORM_VEC3);
                 BeginShaderMode(filmSh); BeginBlendMode(sv.over ? BLEND_ALPHA : BLEND_ADDITIVE);
                 SetShaderValueTexture(filmSh, locFilmPrev, vidTex[1]);
@@ -1053,7 +1175,7 @@ int main(int argc, char **argv)
                 float lo = showP[SP_GRAIN_DB_LO], hi = showP[SP_GRAIN_DB_HI];
                 float u = hi > lo ? Clamp01((dbS - lo)/(hi - lo)) : (dbS >= hi);
                 u = u*u*(3 - 2*u);
-                float grain = fmaxf(0, showP[SP_GRAIN_MIN] + (showP[SP_GRAIN_MAX] - showP[SP_GRAIN_MIN])*u)*gradeV[G_GRAIN];
+                float grain = fmaxf(0, showP[SP_GRAIN_MIN] + (showP[SP_GRAIN_MAX] - showP[SP_GRAIN_MIN])*u)*gradeV[G_GRAIN]*rv[R_GRAIN];
                 float fps = showP[SP_GRAIN_FPS];
                 float seed = (float)fmod(fabs(showP[SP_GRAIN_SEED])*31.0 + (fps > 0 ? floor(GetTime()*fps) : 0), 997.0);
                 float hue = (showP[SP_HUE] + gradeV[G_HUE])*0.0174533f, sat = showP[SP_SAT]*gradeV[G_SAT];
@@ -1250,6 +1372,25 @@ int main(int argc, char **argv)
             }
             }   // !hideUi
         EndDrawing();
+
+        if (++stateTick % 6 == 0) {
+            char js[4096]; int n = 0;
+            #define J(...) n += snprintf(js + n, n < (int)sizeof js ? sizeof js - n : 0, __VA_ARGS__)
+            J("{\"scene\":%d,\"scenes\":[", scene);
+            for (int i = 0, first = 1; i < N_SCENES; i++)
+                if (SceneOn(i)) { J("%s[%d,\"%s\"]", first ? "" : ",", i, SCENES[i].name); first = 0; }
+            J("],\"phys\":%d,\"video\":%d,\"auto\":%d,\"hide\":%d,\"next\":%.0f,", physOn, ShowVideoOn(), autoOn, hideUi,
+              fmaxf(0, sceneSec - sceneT));
+            J("\"clip\":\"");
+            for (const char *c = sv.active && sv.name ? sv.name : ""; *c && n < (int)sizeof js - 600; c++)
+                if (*c != '"' && *c != '\\' && (unsigned char)*c >= 32) js[n++] = *c;
+            J("\",\"clips\":%d,\"bpm\":%.0f,\"level\":%.3f,\"chaos\":%.2f,\"vals\":{", ShowClipCount(),
+              bt.bpm > 0 && beatOn > 0 ? bt.bpm : 0, Clamp01(level*8), chaosU);
+            for (int i = 0; i < N_RV; i++) J("%s\"%s\":[%g,%g,%g,%g]", i ? "," : "", RV[i].key, rv[i], RV[i].lo, RV[i].hi, RV[i].def);
+            J("}}");
+            #undef J
+            if (n < (int)sizeof js) RemoteSetState(js);
+        }
 
         if (shotDir && GetTime() - startTime > shotNext) {
             TakeScreenshot(TextFormat("%s/shot_%05.1f.png", shotDir, shotNext));
