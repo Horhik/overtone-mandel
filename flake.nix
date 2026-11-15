@@ -53,5 +53,52 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
         };
       };
+      packages.${system}.default = pkgs.stdenv.mkDerivation {
+        pname = "overtone-mandel";
+        version = "1.0.0";
+
+        dontUseCmakeConfigure = true;
+        src = self;
+
+        nativeBuildInputs = with pkgs; [
+          cmake
+          gcc
+          git
+          pkg-config
+          wayland-scanner
+          ffmpeg
+          qrencode
+        ];
+
+        buildInputs = with pkgs; [
+          raylib
+          libGL
+          libx11
+          libxrandr
+          libxinerama
+          libxcursor
+          libxi
+          libxkbcommon
+          wayland
+          alsa-lib
+          libpulseaudio
+        ];
+
+buildPhase = ''
+  cmake -S desktop -B build \
+    -DGLFW_BUILD_WAYLAND=OFF \
+    -DFETCHCONTENT_SOURCE_DIR_RAYLIB="$PWD/app/src/main/cpp/deps/raylib" \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+
+  cmake --build build -j$NIX_BUILD_CORES
+'';
+
+        installPhase = ''
+          mkdir -p $out/bin
+          cp build/overtone_mandel $out/bin/
+        '';
+        meta.mainProgram = "overtone_mandel";
+      };
+
     };
 }

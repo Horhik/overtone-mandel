@@ -7,13 +7,20 @@ endif()
 
 include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-# pinned: the commit everything was tested with (master moves; MA_NO_* in main.c must match its raudio.c)
-FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git GIT_TAG 1825891abca17841467c861252d07bf7ccbf3fb7)
+
+FetchContent_Declare(raylib
+  GIT_REPOSITORY https://github.com/raysan5/raylib.git
+  GIT_TAG 1825891abca17841467c861252d07bf7ccbf3fb7
+)
 FetchContent_MakeAvailable(raylib)
+
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../app/src/main/cpp)
 add_executable(overtone_mandel ${SRC}/main.c ${SRC}/voice.c ${SRC}/beat.c ${SRC}/physarum.c ${SRC}/video.c ${SRC}/expr.c ${SRC}/show.c ${SRC}/remote.c)
-target_include_directories(overtone_mandel PRIVATE ${raylib_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR})   # external/miniaudio.h, remote_html.h
+target_include_directories(overtone_mandel PRIVATE
+  ${raylib_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_BINARY_DIR}
+)
 
 # phone control page, embedded into the binary; editing it re-runs configure
 file(READ ${SRC}/remote.html HTML_HEX HEX)
